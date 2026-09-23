@@ -1,0 +1,6 @@
+{
+  "name": "Digital Logic Trainer DLT-01",
+  "description": "NI ELVIS II Prototyping Board logic trainer with separate NI ELVIS Digital Writer (DIO 0-7), Digital Reader (DIO 8-15), User LEDs (LED 0-7), and DC Power Supplies (+5V/GND).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
