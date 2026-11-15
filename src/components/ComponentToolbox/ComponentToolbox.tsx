@@ -1,11 +1,20 @@
 import React, { useState } from 'react';
 import { circuitStore, useCircuitStore } from '../../store/circuitStore';
 import { IC_DEFINITIONS } from '../../data/icDefinitions';
+import { LAB_EXPERIMENTS } from '../../data/experiments';
+import { resolveExperimentVariant } from '../../simulation/experimentEvaluator';
 import { Plus, AlertTriangle, CheckCircle, ShieldAlert, Layers } from 'lucide-react';
 
 export const ComponentToolbox: React.FC = () => {
-  const { placedICs, simulationResult } = useCircuitStore();
+  const { placedICs, simulationResult, selectedExperimentId, selectedExamVariantId } = useCircuitStore();
   const [activeTab, setActiveTab] = useState<'all' | 'gates' | 'msi'>('all');
+
+  const selectedExp = selectedExperimentId
+    ? LAB_EXPERIMENTS.find((e) => e.id === selectedExperimentId)
+    : null;
+  const requiredICIds = selectedExp
+    ? resolveExperimentVariant(selectedExp, selectedExamVariantId).suggestedICs
+    : [];
 
   const handleAddIC = (icId: string) => {
     // Find a clean starting column on breadboard not already colliding with existing ICs
@@ -23,11 +32,17 @@ export const ComponentToolbox: React.FC = () => {
     circuitStore.addIC(icId, targetCol);
   };
 
-  const icList = Object.values(IC_DEFINITIONS).filter((ic) => {
-    if (activeTab === 'gates') return ic.category === 'Gates';
-    if (activeTab === 'msi') return ic.category !== 'Gates';
-    return true;
-  });
+  const icList = Object.values(IC_DEFINITIONS)
+    .filter((ic) => {
+      if (activeTab === 'gates') return ic.category === 'Gates';
+      if (activeTab === 'msi') return ic.category !== 'Gates';
+      return true;
+    })
+    .sort((a, b) => {
+      const aReq = requiredICIds.includes(a.id) ? 0 : 1;
+      const bReq = requiredICIds.includes(b.id) ? 0 : 1;
+      return aReq - bReq;
+    });
 
   return (
     <aside id="component-toolbox" className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col h-full select-none">
@@ -74,12 +89,17 @@ export const ComponentToolbox: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
         {icList.map((ic) => {
           const isPlaced = placedICs.some((item) => item.icDefId === ic.id);
+          const isRequired = requiredICIds.includes(ic.id);
 
           return (
             <div
               key={ic.id}
               id={`toolbox-ic-${ic.id}`}
-              className="bg-slate-950/70 border border-slate-800 hover:border-blue-500/60 rounded-lg p-2.5 transition flex flex-col gap-1.5 shadow-sm group"
+              className={`bg-slate-950/70 border rounded-lg p-2.5 transition flex flex-col gap-1.5 shadow-sm group ${
+                isRequired
+                  ? 'border-amber-500/60 hover:border-amber-400'
+                  : 'border-slate-800 hover:border-blue-500/60'
+              }`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -89,6 +109,11 @@ export const ComponentToolbox: React.FC = () => {
                   <span className="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono">
                     {ic.package}
                   </span>
+                  {isRequired && (
+                    <span className="text-[9px] text-amber-400 font-mono font-semibold">
+                      REQ
+                    </span>
+                  )}
                 </div>
                 {isPlaced && (
                   <span className="text-[9px] text-emerald-400 font-mono font-semibold flex items-center gap-0.5">

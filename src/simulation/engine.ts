@@ -1,4 +1,13 @@
-import { CircuitDiagnostic, DigitalIOSettings, LogicLevel, PlacedIC, SimulationResult, Wire } from '../types/circuit';
+import {
+  CircuitDiagnostic,
+  CircuitSimState,
+  DigitalIOSettings,
+  LogicLevel,
+  PlacedIC,
+  SimulationResult,
+  Wire,
+} from '../types/circuit';
+import { ICInternalState } from '../types/ic';
 import { IC_DEFINITIONS } from '../data/icDefinitions';
 
 export interface BreadboardLayoutConfig {
@@ -67,15 +76,15 @@ export function simulateCircuit(
   placedICs: PlacedIC[],
   wires: Wire[],
   ioSettings: DigitalIOSettings,
-  layout: BreadboardLayoutConfig = DEFAULT_LAYOUT
+  layout: BreadboardLayoutConfig = DEFAULT_LAYOUT,
+  prevState?: CircuitSimState
 ): SimulationResult {
   const dsu = new DisjointSet();
   const errors: CircuitDiagnostic[] = [];
   const warnings: CircuitDiagnostic[] = [];
 
   // 1. Internal Breadboard Connections
-  // 1a. Power Rails:
-  // Top Plus rail: all top-power-plus-1..numCols are connected together
+  // 1a. Power Rails
   for (let c = 2; c <= layout.numCols; c++) {
     dsu.union(`top-power-plus-1`, `top-power-plus-${c}`);
     dsu.union(`top-power-minus-1`, `top-power-minus-${c}`);
@@ -83,9 +92,7 @@ export function simulateCircuit(
     dsu.union(`bot-power-minus-1`, `bot-power-minus-${c}`);
   }
 
-  // 1b. Column Tie-strips:
-  // Rows A..E on column c are electrically connected together
-  // Rows F..J on column c are electrically connected together
+  // 1b. Column Tie-strips
   const rowsTop = ['A', 'B', 'C', 'D', 'E'];
   const rowsBot = ['F', 'G', 'H', 'I', 'J'];
 
@@ -200,149 +207,278 @@ export function simulateCircuit(
     };
   }
 
-  // 3. Iterative Combinational Circuit Evaluation
-  // Active IC outputs will drive their root net.
-  const icOutputDrivers: Record<string, { level: LogicLevel; source: string }> = {};
+  // 3. Delta-Cycle Combinational & Sequential Circuit Evaluation
+  const icOutputDrivers: Record<string, { level: LogicLevel; source: string; root: string }> = {};
+  const workingICStates: Record<string, ICInternalState> = {};
 
-  // Propagate for multiple iterations until stable (handles chained combinational gates like Full Adders)
-  const maxIterations = 8;
-  let changed = true;
-  let iteration = 0;
+  // Precompute DSU roots for D0..D7
+  const inputRoots: string[] = Array.from({ length: 8 }, (_, i) => dsu.find(`d${i}`));
 
-  while (changed && iteration < maxIterations) {
-    changed = false;
-    iteration++;
+  const setOutputDriver = (ic: PlacedIC, pinNum: number, level: LogicLevel): boolean => {
+    const outPinId = `ic-${ic.instanceId}-pin-${pinNum}`;
+    const existing = icOutputDrivers[outPinId];
+    if (!existing) {
+      icOutputDrivers[outPinId] = {
+        level,
+        source: `${ic.icDefId}.${pinNum}`,
+        root: dsu.find(outPinId),
+      };
+      return true;
+    }
+    if (existing.level !== level) {
+      existing.level = level;
+      return true;
+    }
+    return false;
+  };
 
-    // Helper to get current level of any net
-    const getNetLevel = (item: string): LogicLevel => {
-      const root = dsu.find(item);
-
-      if (!ioSettings.powerOn) return 'LOW';
-
-      // Power supply rails
-      if (root === vccRoot) return 'HIGH';
-      if (root === gndRoot) return 'LOW';
-
-      // Digital inputs D0..D7
-      for (let i = 0; i < 8; i++) {
-        if (dsu.find(`d${i}`) === root) {
-          return ioSettings.inputStates[i] ? 'HIGH' : 'LOW';
-        }
-      }
-
-      // Check if driven by any IC output
-      for (const [outPinId, driver] of Object.entries(icOutputDrivers)) {
-        if (dsu.find(outPinId) === root) {
-          return driver.level;
-        }
-      }
-
-      return 'FLOATING';
-    };
-
-    // Evaluate each IC
+  // Seed initial output drivers from prevState (preserves flip-flop registers and cross-coupled latches)
+  if (ioSettings.powerOn) {
     for (const ic of placedICs) {
       const def = IC_DEFINITIONS[ic.icDefId];
       if (!def) continue;
-
       const pStatus = icPowerStatus[ic.instanceId];
-      if (!pStatus || !pStatus.vccOk || !pStatus.gndOk) {
-        // Unpowered IC cannot drive outputs
-        continue;
-      }
+      if (!pStatus || !pStatus.vccOk || !pStatus.gndOk) continue;
 
-      // Evaluate custom IC if defined (e.g. 74138, 74148, 74153, 74139)
-      if (def.evaluateCustom) {
-        const inputLevels: Record<number, LogicLevel> = {};
+      const prev = prevState?.icStates[ic.instanceId];
+      workingICStates[ic.instanceId] = {
+        registers: prev ? { ...prev.registers } : {},
+        prevClocks: prev ? { ...prev.prevClocks } : {},
+        prevOutputs: prev ? { ...prev.prevOutputs } : {},
+      };
+
+      const prevOuts = workingICStates[ic.instanceId].prevOutputs;
+      if (Object.keys(prevOuts).length > 0) {
+        for (const [pinNumStr, lvl] of Object.entries(prevOuts)) {
+          setOutputDriver(ic, Number(pinNumStr), lvl);
+        }
+      } else if (def.isSequential) {
+        // Default complementary initial output for uninitialized sequential outputs
         for (const pin of def.pins) {
-          if (pin.type === 'INPUT' || pin.type === 'ENABLE') {
-            const pinId = `ic-${ic.instanceId}-pin-${pin.number}`;
-            inputLevels[pin.number] = getNetLevel(pinId);
+          if (pin.type === 'OUTPUT') {
+            setOutputDriver(ic, pin.number, pin.inverted ? 'HIGH' : 'LOW');
           }
         }
-
-        const outLevels = def.evaluateCustom(inputLevels);
-        for (const [pinNumStr, lvl] of Object.entries(outLevels)) {
-          const pinNum = Number(pinNumStr);
-          const outPinId = `ic-${ic.instanceId}-pin-${pinNum}`;
-          if (!icOutputDrivers[outPinId] || icOutputDrivers[outPinId].level !== lvl) {
-            icOutputDrivers[outPinId] = {
-              level: lvl,
-              source: `${def.id}.${pinNum}`,
-            };
-            changed = true;
-          }
-        }
-        continue;
-      }
-
-      // Evaluate standard gates
-      if (def.gates) {
+      } else if (def.gates) {
+        // Seed combinational gates to LOW on first boot so cross-coupled latches converge deterministically
         for (const gate of def.gates) {
-          const inLevels: LogicLevel[] = gate.inputs.map((pinNum) => {
-            const pinId = `ic-${ic.instanceId}-pin-${pinNum}`;
-            return getNetLevel(pinId);
-          });
+          setOutputDriver(ic, gate.output, 'LOW');
+        }
+      }
+    }
+  }
 
-          // Check for floating input on the final iteration to generate warning
-          if (iteration === maxIterations - 1) {
-            gate.inputs.forEach((pinNum, idx) => {
-              if (inLevels[idx] === 'FLOATING') {
-                const pinDef = def.pins.find((p) => p.number === pinNum);
-                warnings.push({
-                  id: `floating-in-${ic.instanceId}-${pinNum}`,
-                  type: 'floating_input',
-                  severity: 'warning',
-                  title: `Floating Input at ${def.id} Pin ${pinNum}`,
-                  message: `Gate ${gate.gateIndex} input (${pinDef?.name || pinNum}) is floating/unconnected. Connect it to an input or ground.`,
-                  targetICInstanceId: ic.instanceId,
-                  targetPinNumber: pinNum,
-                });
-              }
-            });
-          }
+  // Helper to resolve current LogicLevel of any circuit node
+  const getNetLevel = (item: string): LogicLevel => {
+    if (!ioSettings.powerOn) return 'LOW';
+    const root = dsu.find(item);
 
-          let outLevel: LogicLevel = 'FLOATING';
+    if (root === vccRoot) return 'HIGH';
+    if (root === gndRoot) return 'LOW';
 
-          if (inLevels.includes('ERROR')) {
-            outLevel = 'ERROR';
-          } else if (inLevels.includes('FLOATING')) {
-            outLevel = 'FLOATING';
-          } else {
-            // All inputs are valid HIGH or LOW
-            const bools = inLevels.map((l) => l === 'HIGH');
-            switch (gate.type) {
-              case 'AND':
-                outLevel = bools.every(Boolean) ? 'HIGH' : 'LOW';
-                break;
-              case 'OR':
-                outLevel = bools.some(Boolean) ? 'HIGH' : 'LOW';
-                break;
-              case 'NOT':
-                outLevel = !bools[0] ? 'HIGH' : 'LOW';
-                break;
-              case 'NAND':
-                outLevel = !bools.every(Boolean) ? 'HIGH' : 'LOW';
-                break;
-              case 'NOR':
-                outLevel = !bools.some(Boolean) ? 'HIGH' : 'LOW';
-                break;
-              case 'XOR':
-                outLevel = bools[0] !== bools[1] ? 'HIGH' : 'LOW';
-                break;
-              default:
-                outLevel = 'LOW';
+    for (let i = 0; i < 8; i++) {
+      if (inputRoots[i] === root) {
+        return ioSettings.inputStates[i] ? 'HIGH' : 'LOW';
+      }
+    }
+
+    for (const driver of Object.values(icOutputDrivers)) {
+      if (driver.root === root) {
+        return driver.level;
+      }
+    }
+
+    return 'FLOATING';
+  };
+
+  // Evaluate all combinational ICs/gates until stable
+  const runCombinationalPass = () => {
+    const maxCombIterations = 12;
+    let changed = true;
+    let iter = 0;
+
+    while (changed && iter < maxCombIterations) {
+      changed = false;
+      iter++;
+
+      for (const ic of placedICs) {
+        const def = IC_DEFINITIONS[ic.icDefId];
+        if (!def || def.isSequential) continue;
+
+        const pStatus = icPowerStatus[ic.instanceId];
+        if (!pStatus || !pStatus.vccOk || !pStatus.gndOk) continue;
+
+        if (def.evaluateCustom) {
+          const inputLevels: Record<number, LogicLevel> = {};
+          for (const pin of def.pins) {
+            if (pin.type === 'INPUT' || pin.type === 'ENABLE') {
+              inputLevels[pin.number] = getNetLevel(`ic-${ic.instanceId}-pin-${pin.number}`);
             }
           }
 
-          const outPinId = `ic-${ic.instanceId}-pin-${gate.output}`;
-          if (!icOutputDrivers[outPinId] || icOutputDrivers[outPinId].level !== outLevel) {
-            icOutputDrivers[outPinId] = {
-              level: outLevel,
-              source: `${def.id}.${gate.output}`,
-            };
-            changed = true;
+          const outLevels = def.evaluateCustom(inputLevels);
+          for (const [pinNumStr, lvl] of Object.entries(outLevels)) {
+            if (setOutputDriver(ic, Number(pinNumStr), lvl)) {
+              changed = true;
+            }
           }
+          continue;
+        }
+
+        if (def.gates) {
+          for (const gate of def.gates) {
+            const inLevels: LogicLevel[] = gate.inputs.map((pinNum) =>
+              getNetLevel(`ic-${ic.instanceId}-pin-${pinNum}`)
+            );
+
+            let outLevel: LogicLevel = 'FLOATING';
+            if (inLevels.includes('ERROR')) {
+              outLevel = 'ERROR';
+            } else if (inLevels.includes('FLOATING')) {
+              outLevel = 'FLOATING';
+            } else {
+              const bools = inLevels.map((l) => l === 'HIGH');
+              switch (gate.type) {
+                case 'AND':
+                  outLevel = bools.every(Boolean) ? 'HIGH' : 'LOW';
+                  break;
+                case 'OR':
+                  outLevel = bools.some(Boolean) ? 'HIGH' : 'LOW';
+                  break;
+                case 'NOT':
+                  outLevel = !bools[0] ? 'HIGH' : 'LOW';
+                  break;
+                case 'NAND':
+                  outLevel = !bools.every(Boolean) ? 'HIGH' : 'LOW';
+                  break;
+                case 'NOR':
+                  outLevel = !bools.some(Boolean) ? 'HIGH' : 'LOW';
+                  break;
+                case 'XOR':
+                  outLevel = bools[0] !== bools[1] ? 'HIGH' : 'LOW';
+                  break;
+                default:
+                  outLevel = 'LOW';
+              }
+            }
+
+            if (setOutputDriver(ic, gate.output, outLevel)) {
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  };
+
+  if (ioSettings.powerOn) {
+    const hasSequentialIC = placedICs.some((ic) => IC_DEFINITIONS[ic.icDefId]?.isSequential);
+
+    if (!hasSequentialIC) {
+      runCombinationalPass();
+    } else {
+      // Delta cycles handle synchronous shift registers without shoot-through AND ripple counters like 7490 (QA->CKB)
+      const maxDeltaCycles = 6;
+      for (let cycle = 0; cycle < maxDeltaCycles; cycle++) {
+        runCombinationalPass();
+
+        // Snapshot all sequential IC inputs BEFORE applying sequential updates
+        const sequentialSnapshots: {
+          ic: PlacedIC;
+          inputLevels: Record<number, LogicLevel>;
+        }[] = [];
+
+        for (const ic of placedICs) {
+          const def = IC_DEFINITIONS[ic.icDefId];
+          if (!def || !def.isSequential || !def.evaluateSequential) continue;
+          const pStatus = icPowerStatus[ic.instanceId];
+          if (!pStatus || !pStatus.vccOk || !pStatus.gndOk) continue;
+
+          const inputLevels: Record<number, LogicLevel> = {};
+          for (const pin of def.pins) {
+            if (pin.type === 'INPUT' || pin.type === 'ENABLE') {
+              inputLevels[pin.number] = getNetLevel(`ic-${ic.instanceId}-pin-${pin.number}`);
+            }
+          }
+          sequentialSnapshots.push({ ic, inputLevels });
+        }
+
+        let seqChanged = false;
+
+        for (const { ic, inputLevels } of sequentialSnapshots) {
+          const def = IC_DEFINITIONS[ic.icDefId]!;
+          const icState = workingICStates[ic.instanceId];
+          const evalResult = def.evaluateSequential!(inputLevels, icState);
+
+          // Check register changes
+          for (const [regKey, regVal] of Object.entries(evalResult.nextRegisters)) {
+            if (icState.registers[regKey] !== regVal) {
+              seqChanged = true;
+            }
+          }
+          icState.registers = evalResult.nextRegisters;
+
+          // Update prevClocks to the snapshot levels and detect clock edge updates
+          for (const [pinNumStr, lvl] of Object.entries(inputLevels)) {
+            const pinNum = Number(pinNumStr);
+            if (icState.prevClocks[pinNum] !== lvl) {
+              icState.prevClocks[pinNum] = lvl;
+              seqChanged = true;
+            }
+          }
+
+          // Commit sequential outputs
+          for (const [pinNumStr, lvl] of Object.entries(evalResult.outputs)) {
+            if (setOutputDriver(ic, Number(pinNumStr), lvl)) {
+              seqChanged = true;
+            }
+          }
+        }
+
+        if (!seqChanged) {
+          break;
+        }
+      }
+
+      runCombinationalPass();
+    }
+
+    // Persist final output levels for all powered ICs + emit floating input warnings cleanly
+    for (const ic of placedICs) {
+      const def = IC_DEFINITIONS[ic.icDefId];
+      if (!def) continue;
+      const pStatus = icPowerStatus[ic.instanceId];
+      if (!pStatus || !pStatus.vccOk || !pStatus.gndOk) continue;
+
+      const icState = workingICStates[ic.instanceId];
+      if (icState) {
+        for (const pin of def.pins) {
+          if (pin.type === 'OUTPUT') {
+            const drv = icOutputDrivers[`ic-${ic.instanceId}-pin-${pin.number}`];
+            if (drv) {
+              icState.prevOutputs[pin.number] = drv.level;
+            }
+          }
+        }
+      }
+
+      if (def.gates) {
+        for (const gate of def.gates) {
+          gate.inputs.forEach((pinNum) => {
+            const lvl = getNetLevel(`ic-${ic.instanceId}-pin-${pinNum}`);
+            if (lvl === 'FLOATING') {
+              const pinDef = def.pins.find((p) => p.number === pinNum);
+              warnings.push({
+                id: `floating-in-${ic.instanceId}-${pinNum}`,
+                type: 'floating_input',
+                severity: 'warning',
+                title: `Floating Input at ${def.id} Pin ${pinNum}`,
+                message: `Gate ${gate.gateIndex} input (${pinDef?.name || pinNum}) is floating/unconnected. Connect it to an input or ground.`,
+                targetICInstanceId: ic.instanceId,
+                targetPinNumber: pinNum,
+              });
+            }
+          });
         }
       }
     }
@@ -376,7 +512,7 @@ export function simulateCircuit(
     // Check if connected directly to an input switch D0..D7
     let connectedToInput = false;
     for (let inIdx = 0; inIdx < 8; inIdx++) {
-      if (dsu.find(`d${inIdx}`) === termRoot) {
+      if (inputRoots[inIdx] === termRoot) {
         const val = ioSettings.inputStates[inIdx] ? 'HIGH' : 'LOW';
         outputStates.push(val);
         outputVoltages.push(val === 'HIGH' ? 5.0 : 0.0);
@@ -388,10 +524,10 @@ export function simulateCircuit(
 
     // Check if driven by an IC output
     let foundDriver = false;
-    for (const [outPinId, driver] of Object.entries(icOutputDrivers)) {
-      if (dsu.find(outPinId) === termRoot) {
+    for (const driver of Object.values(icOutputDrivers)) {
+      if (driver.root === termRoot) {
         outputStates.push(driver.level);
-        outputVoltages.push(driver.level === 'HIGH' ? 5.0 : driver.level === 'LOW' ? 0.0 : 0.0);
+        outputVoltages.push(driver.level === 'HIGH' ? 5.0 : 0.0);
         foundDriver = true;
         break;
       }
@@ -420,9 +556,8 @@ export function simulateCircuit(
     }
 
     let isHigh = false;
-    // Check if connected to an input that is HIGH
     for (let inIdx = 0; inIdx < 8; inIdx++) {
-      if (dsu.find(`dio-${inIdx}`) === ledRoot || dsu.find(`d${inIdx}`) === ledRoot) {
+      if (inputRoots[inIdx] === ledRoot) {
         if (ioSettings.inputStates[inIdx]) {
           isHigh = true;
           break;
@@ -430,10 +565,9 @@ export function simulateCircuit(
       }
     }
 
-    // Check if connected to an IC driver that is HIGH
     if (!isHigh) {
-      for (const [outPinId, driver] of Object.entries(icOutputDrivers)) {
-        if (dsu.find(outPinId) === ledRoot && driver.level === 'HIGH') {
+      for (const driver of Object.values(icOutputDrivers)) {
+        if (driver.root === ledRoot && driver.level === 'HIGH') {
           isHigh = true;
           break;
         }
@@ -447,7 +581,6 @@ export function simulateCircuit(
   const nodeStates: Record<string, LogicLevel> = {};
   const nodeVoltages: Record<string, number> = {};
 
-  // Collect all known circuit nodes for state resolution
   const allNodes = new Set<string>();
   allNodes.add('vcc-src');
   allNodes.add('gnd-src');
@@ -470,7 +603,6 @@ export function simulateCircuit(
     }
   }
 
-  // Also include breadboard holes that have pins or wires
   for (let c = 1; c <= layout.numCols; c++) {
     for (const r of [...rowsTop, ...rowsBot]) {
       allNodes.add(`bb-${r}-${c}`);
@@ -481,7 +613,6 @@ export function simulateCircuit(
     allNodes.add(`bot-power-minus-${c}`);
   }
 
-  // Group nodes into electrical nets by their DSU root
   const rootToNodes: Record<string, string[]> = {};
   for (const node of allNodes) {
     const root = dsu.find(node);
@@ -490,13 +621,12 @@ export function simulateCircuit(
   }
 
   const connectedNets: Record<string, string[]> = {};
-  for (const [root, nodes] of Object.entries(rootToNodes)) {
+  for (const nodes of Object.values(rootToNodes)) {
     for (const node of nodes) {
       connectedNets[node] = nodes;
     }
   }
 
-  // Resolve state and voltage for all nodes based on net driving source
   for (const node of allNodes) {
     const root = dsu.find(node);
 
@@ -518,10 +648,9 @@ export function simulateCircuit(
       continue;
     }
 
-    // Check if driven by an input terminal (D0 - D7)
     let foundInput = false;
     for (let i = 0; i < 8; i++) {
-      if (dsu.find(`d${i}`) === root || dsu.find(`dio-${i}`) === root) {
+      if (inputRoots[i] === root) {
         const isHigh = ioSettings.inputStates[i];
         nodeStates[node] = isHigh ? 'HIGH' : 'LOW';
         nodeVoltages[node] = isHigh ? 5.0 : 0.0;
@@ -531,10 +660,9 @@ export function simulateCircuit(
     }
     if (foundInput) continue;
 
-    // Check if driven by an IC output gate
     let foundGate = false;
-    for (const [outPinId, driver] of Object.entries(icOutputDrivers)) {
-      if (dsu.find(outPinId) === root) {
+    for (const driver of Object.values(icOutputDrivers)) {
+      if (driver.root === root) {
         nodeStates[node] = driver.level;
         nodeVoltages[node] = driver.level === 'HIGH' ? 5.0 : 0.0;
         foundGate = true;
@@ -543,7 +671,6 @@ export function simulateCircuit(
     }
     if (foundGate) continue;
 
-    // User LEDs
     if (node.startsWith('led-')) {
       const idx = Number(node.replace('led-', ''));
       const on = userLedStates[idx];
@@ -552,7 +679,6 @@ export function simulateCircuit(
       continue;
     }
 
-    // Default: floating
     nodeStates[node] = 'FLOATING';
     nodeVoltages[node] = 0.0;
   }
@@ -567,6 +693,9 @@ export function simulateCircuit(
     connectedNets,
     errors,
     warnings,
+    nextState: {
+      icStates: workingICStates,
+    },
   };
 }
 

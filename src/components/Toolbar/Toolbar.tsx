@@ -17,6 +17,8 @@ import {
   Layers,
   Box,
   Compass,
+  Award,
+  Cpu as ChipIcon,
 } from 'lucide-react';
 
 interface Props {
@@ -208,19 +210,50 @@ export const Toolbar: React.FC<Props> = ({ viewMode, onViewModeChange, onOpenRef
           </button>
         </div>
 
-        {/* Guided Mode vs Free Mode Toggle */}
-        <button
-          onClick={() => circuitStore.setLabMode(labMode === 'guided' ? 'free' : 'guided')}
-          className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition cursor-pointer ${
-            labMode === 'guided'
-              ? 'bg-emerald-600/25 border-emerald-500 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
-              : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
-          }`}
-          title="Toggle Guided Mode step-by-step experiment instructions"
-        >
-          <GraduationCap className={`w-3.5 h-3.5 ${labMode === 'guided' ? 'text-emerald-400' : 'text-slate-400'}`} />
-          <span>{labMode === 'guided' ? 'Guided Lab' : 'Free Mode'}</span>
-        </button>
+        {/* Lab Mode Navigation: Free Mode | Guided Lab | PRACTICAL EXAMINATION */}
+        <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-xs">
+          <button
+            id="nav-mode-free"
+            onClick={() => circuitStore.setLabMode('free')}
+            className={`px-2.5 py-1 rounded font-semibold transition cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 ${
+              labMode === 'free'
+                ? 'bg-slate-700 text-white shadow-xs'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Free breadboard exploration mode"
+          >
+            <ChipIcon className="w-3.5 h-3.5" />
+            <span>Free Mode</span>
+          </button>
+
+          <button
+            id="nav-mode-guided"
+            onClick={() => circuitStore.setLabMode('guided')}
+            className={`px-2.5 py-1 rounded font-semibold transition cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 ${
+              labMode === 'guided'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Guided step-by-step laboratory instructions"
+          >
+            <GraduationCap className="w-3.5 h-3.5" />
+            <span>Guided Lab</span>
+          </button>
+
+          <button
+            id="nav-mode-exam"
+            onClick={() => circuitStore.setLabMode('exam')}
+            className={`px-2.5 py-1 rounded font-bold tracking-wide transition cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0 ${
+              labMode === 'exam'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'text-amber-300/90 hover:text-amber-200 hover:bg-slate-800/70'
+            }`}
+            title="SRM AP CSE 207 Final Practical Examination (12 Prescribed Experiments)"
+          >
+            <Award className="w-3.5 h-3.5" />
+            <span>PRACTICAL EXAMINATION</span>
+          </button>
+        </div>
 
         {/* Wire Color Palette */}
         <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 px-2 py-1 rounded-lg">

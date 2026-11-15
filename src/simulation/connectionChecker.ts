@@ -1,19 +1,80 @@
 import { ConnectionCheckResult, PlacedIC, Wire, DigitalIOSettings } from '../types/circuit';
 import { IC_DEFINITIONS } from '../data/icDefinitions';
 import { LAB_EXPERIMENTS } from '../data/experiments';
-import { simulateCircuit, formatNodeLabel, getPinPluggedHoleId } from './engine';
+import { simulateCircuit, getPinPluggedHoleId } from './engine';
+import { evaluateExperiment, resolveExperimentVariant } from './experimentEvaluator';
+
+interface PinSectionSpec {
+  inputs: number[];
+  outputs: number[];
+  enables?: number[];
+  clocks?: number[];
+  asyncControls?: number[];
+}
+
+function getICSectionsForCheck(icDefId: string): PinSectionSpec[] | null {
+  switch (icDefId) {
+    case '74138':
+      return [{ inputs: [1, 2, 3, 4, 5, 6], enables: [4, 5, 6], outputs: [7, 9, 10, 11, 12, 13, 14, 15] }];
+    case '74148':
+      return [{ inputs: [1, 2, 3, 4, 5, 10, 11, 12, 13], enables: [5], outputs: [6, 7, 9, 14, 15] }];
+    case '7485':
+      return [{ inputs: [1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15], outputs: [5, 6, 7] }];
+    case '74153':
+      return [
+        { inputs: [1, 2, 3, 4, 5, 6, 14], enables: [1], outputs: [7] },
+        { inputs: [2, 10, 11, 12, 13, 14, 15], enables: [15], outputs: [9] },
+      ];
+    case '74139':
+      return [
+        { inputs: [1, 2, 3], enables: [1], outputs: [4, 5, 6, 7] },
+        { inputs: [13, 14, 15], enables: [15], outputs: [9, 10, 11, 12] },
+      ];
+    case '7474':
+      return [
+        { inputs: [1, 2, 3, 4], clocks: [3], asyncControls: [1, 4], outputs: [5, 6] },
+        { inputs: [10, 11, 12, 13], clocks: [11], asyncControls: [10, 13], outputs: [8, 9] },
+      ];
+    case '7476':
+      return [
+        { inputs: [1, 2, 3, 4, 16], clocks: [1], asyncControls: [2, 3], outputs: [14, 15] },
+        { inputs: [6, 7, 8, 9, 12], clocks: [6], asyncControls: [7, 8], outputs: [10, 11] },
+      ];
+    case '7490':
+      return [
+        { inputs: [14, 2, 3, 6, 7], clocks: [14], asyncControls: [2, 3, 6, 7], outputs: [12] },
+        { inputs: [1, 2, 3, 6, 7], clocks: [1], asyncControls: [2, 3, 6, 7], outputs: [8, 9, 11] },
+      ];
+    default:
+      return null;
+  }
+}
 
 export function runConnectionCheck(
   placedICs: PlacedIC[],
   wires: Wire[],
   ioSettings: DigitalIOSettings,
-  selectedExpId: string | null
+  selectedExpId: string | null,
+  variantId?: string | null
 ): ConnectionCheckResult {
   const sim = simulateCircuit(placedICs, wires, ioSettings);
   const connectedNets = sim.connectedNets;
   const exp = selectedExpId ? LAB_EXPERIMENTS.find((e) => e.id === selectedExpId) : null;
+  const resolved = exp ? resolveExperimentVariant(exp, variantId) : null;
 
   const checks: ConnectionCheckResult['checks'] = [];
+
+  // Map every IC output pin nodeId for signal-driver detection across cascaded stages
+  const allOutputPinNodes = new Set<string>();
+  for (const ic of placedICs) {
+    const def = IC_DEFINITIONS[ic.icDefId];
+    if (!def) continue;
+    for (const p of def.pins) {
+      if (p.type === 'OUTPUT') {
+        allOutputPinNodes.add(`ic-${ic.instanceId}-pin-${p.number}`);
+      }
+    }
+  }
 
   // Helper: check if two nodes are connected
   const areConnected = (nodeA: string, nodeB: string): boolean => {
@@ -31,6 +92,18 @@ export function runConnectionCheck(
   const netHas = (nodeId: string, predicate: (n: string) => boolean): boolean => {
     const net = getNet(nodeId);
     return net.some(predicate);
+  };
+
+  const netHasDriver = (net: string[]): boolean => {
+    return net.some(
+      (n) =>
+        /^d\d+$/.test(n) ||
+        n === 'vcc-src' ||
+        n === 'gnd-src' ||
+        n.includes('power-') ||
+        n.startsWith('dio-') ||
+        allOutputPinNodes.has(n)
+    );
   };
 
   // 1. Check: VCC Power Connected
@@ -81,13 +154,14 @@ export function runConnectionCheck(
 
   // 4. Check: Every Placed IC is Powered
   if (placedICs.length === 0) {
+    const expectedList = resolved?.suggestedICs ?? exp?.suggestedICs;
     checks.push({
       id: 'check-ic-present',
       label: 'Components on Breadboard',
       passed: false,
-      details: exp ? `Place required ICs (e.g. ${exp.suggestedICs.join(', ')}) onto the breadboard.` : 'No ICs placed on breadboard.',
+      details: exp && expectedList ? `Place required ICs (e.g. ${expectedList.join(', ')}) onto the breadboard.` : 'No ICs placed on breadboard.',
       severity: 'warning',
-      suggestedFix: exp ? `Select ${exp.suggestedICs[0]} from the left IC toolbox and click Place.` : 'Place an IC from the left toolbox.',
+      suggestedFix: exp && expectedList ? `Select ${expectedList[0]} from the left IC toolbox and click Place.` : 'Place an IC from the left toolbox.',
     });
   } else {
     for (const ic of placedICs) {
@@ -131,7 +205,7 @@ export function runConnectionCheck(
     passed: inputsUsed.length > 0,
     details: inputsUsed.length > 0
       ? `Active inputs: ${inputsUsed.map((i) => `D${i}`).join(', ')} wired to logic targets.`
-      : 'No digital input signals connected. Wire D0/D1 switches to IC gate inputs.',
+      : 'No digital input signals connected. Wire D0/D1 switches to IC inputs.',
     severity: inputsUsed.length > 0 ? undefined : 'warning',
     suggestedFix: 'Run a jumper wire from D0 or D1 to an input pin on your logic IC.',
     highlightNodes: ['d0', 'd1'],
@@ -151,41 +225,73 @@ export function runConnectionCheck(
     passed: outputsUsed.length > 0,
     details: outputsUsed.length > 0
       ? `Connected outputs: ${outputsUsed.map((i) => `D${i}`).join(', ')} connected to monitor signals.`
-      : 'No digital outputs connected. Wire IC gate output to D8 or D9 LED terminal.',
+      : 'No digital outputs connected. Wire IC output to D8 or D9 LED terminal.',
     severity: outputsUsed.length > 0 ? undefined : 'warning',
-    suggestedFix: 'Run a jumper wire from your gate output pin to terminal D8.',
+    suggestedFix: 'Run a jumper wire from your output pin to terminal D8.',
     highlightNodes: ['d8'],
   });
 
-  // 7. Check: Floating Inputs on Used ICs
+  // 7. Check: Floating Inputs on Used ICs / Sections
   const floatingInputs: { icDefId: string; pinNum: number; pinName: string; holeId: string }[] = [];
+  const seenFloating = new Set<string>();
+
+  const isPinWiredOut = (icInstanceId: string, pinNum: number): boolean => {
+    const outPinId = `ic-${icInstanceId}-pin-${pinNum}`;
+    const outNet = getNet(outPinId);
+    if (outNet.some((n) => !n.startsWith('bb-') && n !== outPinId)) {
+      return true;
+    }
+    const strips = new Set(
+      outNet
+        .filter((n) => n.startsWith('bb-'))
+        .map((n) => {
+          const parts = n.split('-');
+          const side = ['A', 'B', 'C', 'D', 'E'].includes(parts[1]) ? 'T' : 'B';
+          return `${side}-${parts[2]}`;
+        })
+    );
+    return strips.size > 1;
+  };
+
+  const recordIfFloating = (ic: PlacedIC, def: typeof IC_DEFINITIONS[string], inPin: number) => {
+    const inPinId = `ic-${ic.instanceId}-pin-${inPin}`;
+    if (seenFloating.has(inPinId)) return;
+    const pinDef = def.pins.find((p) => p.number === inPin);
+    if (!pinDef || pinDef.type === 'NC' || pinDef.type === 'POWER' || pinDef.type === 'OUTPUT') return;
+
+    const inNet = getNet(inPinId);
+    if (!netHasDriver(inNet)) {
+      seenFloating.add(inPinId);
+      floatingInputs.push({
+        icDefId: def.partNumber,
+        pinNum: inPin,
+        pinName: pinDef.name || `Pin ${inPin}`,
+        holeId: getPinPluggedHoleId(ic, inPin),
+      });
+    }
+  };
+
   for (const ic of placedICs) {
     const def = IC_DEFINITIONS[ic.icDefId];
     if (!def) continue;
 
-    for (const gate of def.gates || []) {
-      // Check if this gate is being used (its output has a connection)
-      const outPinId = `ic-${ic.instanceId}-pin-${gate.output}`;
-      const outNet = getNet(outPinId);
-      const isGateUsed = outNet.length > 1;
-
-      if (isGateUsed) {
-        for (const inPin of gate.inputs) {
-          const inPinId = `ic-${ic.instanceId}-pin-${inPin}`;
-          const inNet = getNet(inPinId);
-          // If inNet only contains itself or its breadboard column and has no signal source
-          const hasDriver = inNet.some(
-            (n) => n.startsWith('d') || n === 'vcc-src' || n === 'gnd-src' || n.includes('power-') || n.startsWith('dio-')
-          );
-          if (!hasDriver && inNet.length <= 5) {
-            const holeId = getPinPluggedHoleId(ic, inPin);
-            const pinDef = def.pins.find((p) => p.number === inPin);
-            floatingInputs.push({
-              icDefId: def.partNumber,
-              pinNum: inPin,
-              pinName: pinDef?.name || `Pin ${inPin}`,
-              holeId,
-            });
+    if (def.gates && def.gates.length > 0) {
+      for (const gate of def.gates) {
+        if (isPinWiredOut(ic.instanceId, gate.output)) {
+          for (const inPin of gate.inputs) {
+            recordIfFloating(ic, def, inPin);
+          }
+        }
+      }
+    } else {
+      const sections = getICSectionsForCheck(def.id);
+      if (sections) {
+        for (const sec of sections) {
+          const isSecUsed = sec.outputs.some((outPin) => isPinWiredOut(ic.instanceId, outPin));
+          if (isSecUsed) {
+            for (const inPin of sec.inputs) {
+              recordIfFloating(ic, def, inPin);
+            }
           }
         }
       }
@@ -194,28 +300,146 @@ export function runConnectionCheck(
 
   checks.push({
     id: 'check-floating-inputs',
-    label: 'Gate Inputs Floating Check',
+    label: 'IC Inputs Floating Check',
     passed: floatingInputs.length === 0,
     details: floatingInputs.length === 0
-      ? 'No active gate inputs are left floating.'
-      : `Floating input detected on ${floatingInputs.map((f) => `${f.icDefId} ${f.pinName}`).join(', ')}. Connect to an input switch (D0-D7) or ground.`,
+      ? 'No active IC inputs are left floating.'
+      : `Floating input detected on ${floatingInputs.map((f) => `${f.icDefId} ${f.pinName}`).join(', ')}. Connect to an input switch (D0-D7), +5V, or GND.`,
     severity: floatingInputs.length === 0 ? undefined : 'warning',
-    suggestedFix: floatingInputs.length > 0 ? `Connect D0 or D1 to ${floatingInputs[0].holeId}.` : undefined,
+    suggestedFix: floatingInputs.length > 0 ? `Connect a valid logic level or switch to ${floatingInputs[0].holeId}.` : undefined,
     highlightNodes: floatingInputs.map((f) => f.holeId),
   });
 
-  // 8. Check: Output Contention (Multiple Outputs or Output tied to Power)
-  let outputConflict = false;
-  let conflictNodes: string[] = [];
+  // 7b. Missing Enable, Clock, and Flip-Flop Preset/Clear Diagnostics on active sections
+  const missingEnables: { label: string; holeId: string }[] = [];
+  const clockFaults: { label: string; holeId: string; reason: string }[] = [];
+  const asyncFaults: { label: string; holeId: string; reason: string }[] = [];
+
   for (const ic of placedICs) {
     const def = IC_DEFINITIONS[ic.icDefId];
     if (!def) continue;
-    for (const gate of def.gates || []) {
-      const outPinId = `ic-${ic.instanceId}-pin-${gate.output}`;
+    const sections = getICSectionsForCheck(def.id);
+    if (!sections) continue;
+
+    for (const sec of sections) {
+      const isSecUsed = sec.outputs.some((outPin) => isPinWiredOut(ic.instanceId, outPin));
+      if (!isSecUsed) continue;
+
+      if (sec.enables) {
+        for (const enPin of sec.enables) {
+          const pinDef = def.pins.find((p) => p.number === enPin);
+          const enNet = getNet(`ic-${ic.instanceId}-pin-${enPin}`);
+          if (!netHasDriver(enNet)) {
+            missingEnables.push({
+              label: `${def.partNumber} Pin ${enPin} (${pinDef?.name || 'EN'})`,
+              holeId: getPinPluggedHoleId(ic, enPin),
+            });
+          }
+        }
+      }
+
+      if (sec.clocks) {
+        for (const clkPin of sec.clocks) {
+          const pinDef = def.pins.find((p) => p.number === clkPin);
+          const clkNet = getNet(`ic-${ic.instanceId}-pin-${clkPin}`);
+          const holeId = getPinPluggedHoleId(ic, clkPin);
+          const hasSwitchOrIC = clkNet.some((n) => /^d[0-7]$/.test(n) || allOutputPinNodes.has(n));
+          const tiedStatic = clkNet.includes('vcc-src') || clkNet.includes('gnd-src');
+          if (!netHasDriver(clkNet)) {
+            clockFaults.push({
+              label: `${def.partNumber} Pin ${clkPin} (${pinDef?.name || 'CLK'})`,
+              holeId,
+              reason: 'unconnected (floating)',
+            });
+          } else if (tiedStatic && !hasSwitchOrIC) {
+            clockFaults.push({
+              label: `${def.partNumber} Pin ${clkPin} (${pinDef?.name || 'CLK'})`,
+              holeId,
+              reason: 'tied directly to static +5V/GND instead of a clock switch or upstream output',
+            });
+          }
+        }
+      }
+
+      if (sec.asyncControls) {
+        for (const ctrlPin of sec.asyncControls) {
+          const pinDef = def.pins.find((p) => p.number === ctrlPin);
+          const ctrlNet = getNet(`ic-${ic.instanceId}-pin-${ctrlPin}`);
+          if (!netHasDriver(ctrlNet)) {
+            asyncFaults.push({
+              label: `${def.partNumber} Pin ${ctrlPin} (${pinDef?.name || 'CTRL'})`,
+              holeId: getPinPluggedHoleId(ic, ctrlPin),
+              reason: 'floating (must be driven by D0-D7, +5V, or GND)',
+            });
+          }
+        }
+
+        // Check active-LOW PRE' and CLR' simultaneously tied permanently to GND
+        if ((def.id === '7474' || def.id === '7476') && sec.asyncControls.length === 2) {
+          const [pA, pB] = sec.asyncControls;
+          const netA = getNet(`ic-${ic.instanceId}-pin-${pA}`);
+          const netB = getNet(`ic-${ic.instanceId}-pin-${pB}`);
+          if (netA.includes('gnd-src') && netB.includes('gnd-src')) {
+            asyncFaults.push({
+              label: `${def.partNumber} Pins ${pA} & ${pB}`,
+              holeId: getPinPluggedHoleId(ic, pA),
+              reason: 'both active-LOW PRE\' and CLR\' are permanently shorted to GND (forbidden state)',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (missingEnables.length > 0) {
+    checks.push({
+      id: 'check-missing-enables',
+      label: 'IC Enable Signals Connected',
+      passed: false,
+      details: `Missing enable signal(s): ${missingEnables.map((e) => e.label).join(', ')}.`,
+      severity: 'error',
+      suggestedFix: `Drive ${missingEnables[0].label} (${missingEnables[0].holeId}) from an input switch (D0-D7), +5V, or GND.`,
+      highlightNodes: missingEnables.map((e) => e.holeId),
+    });
+  }
+
+  if (clockFaults.length > 0) {
+    checks.push({
+      id: 'check-clock-connections',
+      label: 'Clock Input Connections',
+      passed: false,
+      details: `Clock connection issue: ${clockFaults.map((c) => `${c.label} is ${c.reason}`).join('; ')}.`,
+      severity: 'error',
+      suggestedFix: `Connect ${clockFaults[0].label} (${clockFaults[0].holeId}) to a clock switch (D0-D7) or QA ripple output.`,
+      highlightNodes: clockFaults.map((c) => c.holeId),
+    });
+  }
+
+  if (asyncFaults.length > 0) {
+    checks.push({
+      id: 'check-async-controls',
+      label: 'Preset / Clear / Reset Connections',
+      passed: false,
+      details: `Async control issue: ${asyncFaults.map((a) => `${a.label} is ${a.reason}`).join('; ')}.`,
+      severity: 'error',
+      suggestedFix: `Wire ${asyncFaults[0].label} (${asyncFaults[0].holeId}) cleanly to a control switch or inactive rail (+5V for PRE'/CLR', GND for 7490 R0/R9).`,
+      highlightNodes: asyncFaults.map((a) => a.holeId),
+    });
+  }
+
+  // 8. Check: Output Contention (Output tied directly to Power Rail)
+  let outputConflict = false;
+  const conflictNodes: string[] = [];
+  for (const ic of placedICs) {
+    const def = IC_DEFINITIONS[ic.icDefId];
+    if (!def) continue;
+    for (const pin of def.pins) {
+      if (pin.type !== 'OUTPUT') continue;
+      const outPinId = `ic-${ic.instanceId}-pin-${pin.number}`;
       const net = getNet(outPinId);
       if (net.includes('vcc-src') || net.includes('gnd-src')) {
         outputConflict = true;
-        conflictNodes.push(getPinPluggedHoleId(ic, gate.output));
+        conflictNodes.push(getPinPluggedHoleId(ic, pin.number));
       }
     }
   }
@@ -225,7 +449,7 @@ export function runConnectionCheck(
     label: 'No Output Bus Contention',
     passed: !outputConflict,
     details: outputConflict
-      ? 'FAULT: Gate output is shorted directly to +5V or GND power rail!'
+      ? 'FAULT: IC output is shorted directly to +5V or GND power rail!'
       : 'Outputs are cleanly isolated from direct power shorting.',
     severity: outputConflict ? 'error' : undefined,
     highlightNodes: conflictNodes,
@@ -237,20 +461,44 @@ export function runConnectionCheck(
   let expSuggestedFix: string | undefined = undefined;
   let expHighlightNodes: string[] = [];
 
-  if (exp) {
-    // Check if required ICs are placed
-    const missingICs = exp.suggestedICs.filter(
-      (reqIc) => !placedICs.some((p) => p.icDefId.includes(reqIc) || reqIc.includes(p.icDefId))
-    );
+  if (exp && resolved) {
+    const missingICMessages: string[] = [];
+    let firstMissingIc: string | null = null;
 
-    if (missingICs.length > 0) {
+    if (exp.id === 'exp-basic-gates') {
+      const hasAnyGateIC = resolved.suggestedICs.some((reqIc) =>
+        placedICs.some((p) => p.icDefId.includes(reqIc) || reqIc.includes(p.icDefId))
+      );
+      if (!hasAnyGateIC) {
+        firstMissingIc = resolved.suggestedICs[0];
+        missingICMessages.push(`one of ${resolved.suggestedICs.join('/')}`);
+      }
+    } else {
+      const requiredList =
+        resolved.referenceCircuit?.ics && resolved.referenceCircuit.ics.length > 0
+          ? resolved.referenceCircuit.ics.map((i) => i.icDefId)
+          : resolved.suggestedICs;
+      const requiredCounts: Record<string, number> = {};
+      for (const reqIc of requiredList) {
+        requiredCounts[reqIc] = (requiredCounts[reqIc] || 0) + 1;
+      }
+
+      for (const [reqIc, reqCount] of Object.entries(requiredCounts)) {
+        const placedCount = placedICs.filter(
+          (p) => p.icDefId.includes(reqIc) || reqIc.includes(p.icDefId)
+        ).length;
+        if (placedCount < reqCount) {
+          if (!firstMissingIc) firstMissingIc = reqIc;
+          missingICMessages.push(reqCount > 1 ? `${reqIc} (${placedCount}/${reqCount})` : reqIc);
+        }
+      }
+    }
+
+    if (missingICMessages.length > 0) {
       expCheckPassed = false;
-      expCheckDetails = `Missing required IC: ${missingICs.join(', ')}. Place this chip to complete ${exp.title}.`;
-      expSuggestedFix = `Add ${missingICs[0]} from the left toolbox onto the breadboard.`;
+      expCheckDetails = `Missing required IC(s): ${missingICMessages.join(', ')}. Place chip(s) to complete ${exp.title}.`;
+      expSuggestedFix = `Add ${firstMissingIc} from the left toolbox onto the breadboard.`;
     } else if (exp.id === 'exp-half-adder') {
-      // Half Adder verification:
-      // SUM must be XOR(D0, D1) -> D8
-      // CARRY must be AND(D0, D1) -> D9
       const xorIc = placedICs.find((p) => p.icDefId.includes('7486'));
       const andIc = placedICs.find((p) => p.icDefId.includes('7408'));
 
@@ -259,7 +507,6 @@ export function runConnectionCheck(
         expCheckDetails = 'Half Adder requires both 7486 (XOR) and 7408 (AND) ICs.';
         expSuggestedFix = 'Place 7486 and 7408 on the board.';
       } else {
-        // Check SUM: D8 must be driven by 7486 output pin 3, 6, 8, or 11
         const xorOutHole = getPinPluggedHoleId(xorIc, 3);
         const andOutHole = getPinPluggedHoleId(andIc, 3);
         const d8Net = getNet('d8');
@@ -268,7 +515,6 @@ export function runConnectionCheck(
         const sumOnD8 = areConnected('d8', xorOutHole) || d8Net.some((n) => n.includes(`ic-${xorIc.instanceId}`));
         const carryOnD9 = areConnected('d9', andOutHole) || d9Net.some((n) => n.includes(`ic-${andIc.instanceId}`));
 
-        // Check if user accidentally swapped D8 and D9
         const sumOnD9 = areConnected('d9', xorOutHole) || d9Net.some((n) => n.includes(`ic-${xorIc.instanceId}`));
         const carryOnD8 = areConnected('d8', andOutHole) || d8Net.some((n) => n.includes(`ic-${andIc.instanceId}`));
 
@@ -287,9 +533,8 @@ export function runConnectionCheck(
         }
       }
     } else {
-      // General check: verify required inputs and outputs are wired
-      const reqInputs = Object.values(exp.pinMapping.inputNames);
-      const reqOutputs = Object.values(exp.pinMapping.outputNames);
+      const reqInputs = Object.values(resolved.pinMapping.inputNames);
+      const reqOutputs = Object.values(resolved.pinMapping.outputNames);
 
       const missingInputs = reqInputs.filter((inName) => getNet(inName.toLowerCase()).length <= 1);
       const missingOutputs = reqOutputs.filter((outName) => getNet(outName.toLowerCase()).length <= 1);
@@ -297,7 +542,7 @@ export function runConnectionCheck(
       if (missingInputs.length > 0 || missingOutputs.length > 0) {
         expCheckPassed = false;
         expCheckDetails = `Unwired experiment terminals: ${[...missingInputs, ...missingOutputs].join(', ')}.`;
-        expSuggestedFix = missingInputs.length > 0 ? `Wire ${missingInputs[0]} to logic gate inputs.` : `Wire gate output to ${missingOutputs[0]}.`;
+        expSuggestedFix = missingInputs.length > 0 ? `Wire ${missingInputs[0]} to IC inputs.` : `Wire IC output to ${missingOutputs[0]}.`;
         expHighlightNodes = [...missingInputs, ...missingOutputs].map((s) => s.toLowerCase());
       } else {
         expCheckDetails = `All required terminals (${reqInputs.join(', ')} and ${reqOutputs.join(', ')}) are connected.`;
@@ -306,7 +551,7 @@ export function runConnectionCheck(
 
     checks.push({
       id: 'check-experiment-topology',
-      label: `Experiment Logic Topology: ${exp.title}`,
+      label: `Experiment Logic Topology: ${resolved.variant ? resolved.variant.label : exp.title}`,
       passed: expCheckPassed,
       details: expCheckDetails,
       severity: expCheckPassed ? undefined : 'error',
@@ -315,65 +560,28 @@ export function runConnectionCheck(
     });
   }
 
-  // 10. Truth Table Verification (if experiment exists)
+  // 10. Functional Truth Table / Sequential Verification via Shared Engine Evaluator
   let truthTableResults: ConnectionCheckResult['truthTableResults'] = undefined;
-  if (exp && exp.truthTable && exp.truthTable.length > 0) {
-    truthTableResults = [];
-    const inputNames = exp.pinMapping.inputNames; // { A: 'D0', B: 'D1' }
-    const outputNames = exp.pinMapping.outputNames; // { SUM: 'D8', CARRY: 'D9' }
+  if (
+    exp &&
+    resolved &&
+    ((resolved.truthTable && resolved.truthTable.length > 0) ||
+      (resolved.sequentialTests && resolved.sequentialTests.length > 0))
+  ) {
+    const evalRes = evaluateExperiment(exp, placedICs, wires, ioSettings.inputStates, variantId);
+    truthTableResults = evalRes.results;
 
-    for (const testCase of exp.truthTable) {
-      // Construct simulated inputs
-      const testInputs: boolean[] = [false, false, false, false, false, false, false, false];
-      for (const [inKey, bitVal] of Object.entries(testCase.inputs)) {
-        const terminal = inputNames[inKey]; // e.g. 'D0'
-        if (terminal) {
-          const idx = parseInt(terminal.replace(/[^0-9]/g, ''), 10);
-          if (idx >= 0 && idx < 8) {
-            testInputs[idx] = bitVal === 1;
-          }
-        }
-      }
+    const passedCount = evalRes.results.filter((t) => t.passed).length;
+    const totalCount = evalRes.results.length;
+    const allPassed = evalRes.passed;
 
-      // Simulate with these test inputs
-      const testSim = simulateCircuit(placedICs, wires, {
-        inputStates: testInputs,
-        powerOn: true,
-      });
-
-      const actualOutputs: Record<string, number> = {};
-      let casePassed = true;
-
-      for (const [outKey, expectedVal] of Object.entries(testCase.expectedOutputs)) {
-        const terminal = outputNames[outKey]; // e.g. 'D8'
-        if (terminal) {
-          const idx = parseInt(terminal.replace(/[^0-9]/g, ''), 10);
-          const outState = testSim.outputStates[idx - 8];
-          const actualBit = outState === 'HIGH' ? 1 : 0;
-          actualOutputs[outKey] = actualBit;
-          if (actualBit !== expectedVal) {
-            casePassed = false;
-          }
-        }
-      }
-
-      truthTableResults.push({
-        testCaseId: testCase.id,
-        inputs: testCase.inputs,
-        expected: testCase.expectedOutputs,
-        actual: actualOutputs,
-        passed: casePassed,
-      });
-    }
-
-    const allPassed = truthTableResults.every((t) => t.passed);
     checks.push({
       id: 'check-truth-table',
-      label: 'Truth Table Functional Verification',
+      label: evalRes.isSequential ? 'Sequential State & Sequence Verification' : 'Truth Table Functional Verification',
       passed: allPassed,
       details: allPassed
-        ? `All ${truthTableResults.length}/${truthTableResults.length} test vectors passed truth table verification!`
-        : `${truthTableResults.filter((t) => t.passed).length}/${truthTableResults.length} test vectors passed. Some logic states differ from expected truth table.`,
+        ? `All ${totalCount}/${totalCount} ${evalRes.isSequential ? 'sequential transition steps' : 'test vectors'} passed functional verification!`
+        : `${passedCount}/${totalCount} ${evalRes.isSequential ? 'sequential steps' : 'test vectors'} passed. Some logic states differ from expected behavior.`,
       severity: allPassed ? undefined : 'error',
     });
   }

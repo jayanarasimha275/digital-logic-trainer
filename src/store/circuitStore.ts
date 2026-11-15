@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import { DigitalIOSettings, LogicLevel, PlacedIC, SimulationResult, Wire, WireColor, SignalHistorySample } from '../types/circuit';
+import { CircuitSimState, DigitalIOSettings, LogicLevel, PlacedIC, SimulationResult, Wire, WireColor, SignalHistorySample } from '../types/circuit';
 import { LAB_EXPERIMENTS } from '../data/experiments';
 import { IC_DEFINITIONS } from '../data/icDefinitions';
-import { simulateCircuit } from '../simulation/engine';
+import { DEFAULT_LAYOUT, simulateCircuit } from '../simulation/engine';
+
+import { PRACTICAL_EXAM_IDS } from '../data/practicalExamData';
 
 export interface CircuitState {
   placedICs: PlacedIC[];
   wires: Wire[];
   ioSettings: DigitalIOSettings;
   selectedExperimentId: string | null;
+  selectedExamVariantId: string | null;
   selectedWireId: string | null;
   selectedICInstanceId: string | null;
   selectedPin: { instanceId: string; pinNumber: number } | null;
@@ -24,7 +27,7 @@ export interface CircuitState {
   boardLocked: boolean;
   interactionMode: 'wire' | 'camera';
   viewMode: 'precision' | '3d' | 'schematic';
-  labMode: 'free' | 'guided';
+  labMode: 'free' | 'guided' | 'exam';
   activeTool: 'wire' | 'probe' | 'delete';
   highlightedNodes: string[];
   tracedSignalNet: string[] | null;
@@ -34,6 +37,7 @@ interface HistorySnapshot {
   placedICs: PlacedIC[];
   wires: Wire[];
   ioSettings: DigitalIOSettings;
+  simState: CircuitSimState;
 }
 
 // Initial state
@@ -42,11 +46,14 @@ const INITIAL_IO_SETTINGS: DigitalIOSettings = {
   powerOn: true,
 };
 
+const EMPTY_SIM_STATE: CircuitSimState = { icStates: {} };
+
 let globalState: {
   placedICs: PlacedIC[];
   wires: Wire[];
   ioSettings: DigitalIOSettings;
   selectedExperimentId: string | null;
+  selectedExamVariantId: string | null;
   selectedWireId: string | null;
   selectedICInstanceId: string | null;
   selectedPin: { instanceId: string; pinNumber: number } | null;
@@ -54,6 +61,7 @@ let globalState: {
   currentWireColor: WireColor;
   signalProbeMode: boolean;
   probedHoleId: string | null;
+  simState: CircuitSimState;
   simulationResult: SimulationResult;
   signalHistory: SignalHistorySample[];
   history: HistorySnapshot[];
@@ -61,7 +69,7 @@ let globalState: {
   boardLocked: boolean;
   interactionMode: 'wire' | 'camera';
   viewMode: 'precision' | '3d' | 'schematic';
-  labMode: 'free' | 'guided';
+  labMode: 'free' | 'guided' | 'exam';
   activeTool: 'wire' | 'probe' | 'delete';
   highlightedNodes: string[];
   tracedSignalNet: string[] | null;
@@ -70,6 +78,7 @@ let globalState: {
   wires: [],
   ioSettings: INITIAL_IO_SETTINGS,
   selectedExperimentId: null,
+  selectedExamVariantId: null,
   selectedWireId: null,
   selectedICInstanceId: null,
   selectedPin: null,
@@ -77,7 +86,8 @@ let globalState: {
   currentWireColor: 'blue',
   signalProbeMode: false,
   probedHoleId: null,
-  simulationResult: simulateCircuit([], [], INITIAL_IO_SETTINGS),
+  simState: EMPTY_SIM_STATE,
+  simulationResult: simulateCircuit([], [], INITIAL_IO_SETTINGS, DEFAULT_LAYOUT, EMPTY_SIM_STATE),
   signalHistory: [],
   history: [],
   future: [],
@@ -101,6 +111,7 @@ function pushHistory() {
     placedICs: JSON.parse(JSON.stringify(globalState.placedICs)),
     wires: JSON.parse(JSON.stringify(globalState.wires)),
     ioSettings: JSON.parse(JSON.stringify(globalState.ioSettings)),
+    simState: JSON.parse(JSON.stringify(globalState.simState)),
   });
   if (globalState.history.length > 25) {
     globalState.history.shift();
@@ -109,8 +120,15 @@ function pushHistory() {
 }
 
 function recomputeSimulation() {
-  const result = simulateCircuit(globalState.placedICs, globalState.wires, globalState.ioSettings);
+  const result = simulateCircuit(
+    globalState.placedICs,
+    globalState.wires,
+    globalState.ioSettings,
+    DEFAULT_LAYOUT,
+    globalState.simState
+  );
   globalState.simulationResult = result;
+  globalState.simState = result.nextState;
 
   // Append to signal history
   const inByte = globalState.ioSettings.inputStates.reduce((acc, bit, idx) => acc | ((bit ? 1 : 0) << idx), 0);
@@ -137,6 +155,7 @@ export const circuitStore = {
       wires: globalState.wires,
       ioSettings: globalState.ioSettings,
       selectedExperimentId: globalState.selectedExperimentId,
+      selectedExamVariantId: globalState.selectedExamVariantId,
       selectedWireId: globalState.selectedWireId,
       selectedICInstanceId: globalState.selectedICInstanceId,
       selectedPin: globalState.selectedPin,
@@ -166,7 +185,7 @@ export const circuitStore = {
     globalState.placedICs.push({
       instanceId,
       icDefId,
-      startCol: Math.max(1, Math.min(30 - Math.floor(def.pinCount / 2), startCol)),
+      startCol: Math.max(1, Math.min(30 - Math.floor(def.pinCount / 2) + 1, startCol)),
       rotation: 0,
     });
     globalState.selectedICInstanceId = instanceId;
@@ -312,16 +331,35 @@ export const circuitStore = {
     }
   },
 
-  setInputBit(index: number, value: boolean) {
+  setInputBit(index: number, value: boolean, recordHistory: boolean = true) {
     if (index >= 0 && index < 8) {
       if (globalState.ioSettings.inputStates[index] === value) return;
-      pushHistory();
+      if (recordHistory) pushHistory();
       const updated = [...globalState.ioSettings.inputStates];
       updated[index] = value;
       globalState.ioSettings = { ...globalState.ioSettings, inputStates: updated };
       recomputeSimulation();
       notify();
     }
+  },
+
+  setInputBits(updates: Record<number, boolean>, recordHistory: boolean = true) {
+    const entries = Object.entries(updates);
+    if (entries.length === 0) return;
+    const updated = [...globalState.ioSettings.inputStates];
+    let changed = false;
+    for (const [idxStr, val] of entries) {
+      const idx = Number(idxStr);
+      if (idx >= 0 && idx < 8 && updated[idx] !== val) {
+        updated[idx] = val;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    if (recordHistory) pushHistory();
+    globalState.ioSettings = { ...globalState.ioSettings, inputStates: updated };
+    recomputeSimulation();
+    notify();
   },
 
   setInputByte(byteVal: number) {
@@ -362,19 +400,27 @@ export const circuitStore = {
     globalState.activeWireStart = null;
     globalState.probedHoleId = null;
     globalState.ioSettings = { ...INITIAL_IO_SETTINGS };
+    globalState.simState = { icStates: {} };
     recomputeSimulation();
     notify();
   },
 
-  loadExperiment(expId: string, loadReference: boolean = false) {
+  loadExperiment(expId: string, loadReference: boolean = false, variantId?: string | null) {
     pushHistory();
     globalState.selectedExperimentId = expId;
     const exp = LAB_EXPERIMENTS.find((e) => e.id === expId);
+    const activeVariant =
+      exp?.variants && exp.variants.length > 0
+        ? exp.variants.find((v) => v.id === variantId) || exp.variants[0]
+        : null;
+    globalState.selectedExamVariantId = activeVariant ? activeVariant.id : null;
 
-    if (loadReference && exp?.referenceCircuit) {
-      globalState.placedICs = JSON.parse(JSON.stringify(exp.referenceCircuit.ics));
-      globalState.wires = JSON.parse(JSON.stringify(exp.referenceCircuit.wires));
+    const refToLoad = activeVariant?.referenceCircuit ?? exp?.referenceCircuit;
+    if (loadReference && refToLoad) {
+      globalState.placedICs = JSON.parse(JSON.stringify(refToLoad.ics));
+      globalState.wires = JSON.parse(JSON.stringify(refToLoad.wires));
       globalState.ioSettings = { ...INITIAL_IO_SETTINGS };
+      globalState.simState = { icStates: {} };
     }
     recomputeSimulation();
     notify();
@@ -394,6 +440,7 @@ export const circuitStore = {
     if (data.selectedExperimentId) {
       globalState.selectedExperimentId = data.selectedExperimentId;
     }
+    globalState.simState = { icStates: {} };
     recomputeSimulation();
     notify();
   },
@@ -405,10 +452,12 @@ export const circuitStore = {
       placedICs: JSON.parse(JSON.stringify(globalState.placedICs)),
       wires: JSON.parse(JSON.stringify(globalState.wires)),
       ioSettings: JSON.parse(JSON.stringify(globalState.ioSettings)),
+      simState: JSON.parse(JSON.stringify(globalState.simState)),
     });
     globalState.placedICs = prev.placedICs;
     globalState.wires = prev.wires;
     globalState.ioSettings = prev.ioSettings;
+    globalState.simState = prev.simState;
     recomputeSimulation();
     notify();
   },
@@ -420,10 +469,12 @@ export const circuitStore = {
       placedICs: JSON.parse(JSON.stringify(globalState.placedICs)),
       wires: JSON.parse(JSON.stringify(globalState.wires)),
       ioSettings: JSON.parse(JSON.stringify(globalState.ioSettings)),
+      simState: JSON.parse(JSON.stringify(globalState.simState)),
     });
     globalState.placedICs = next.placedICs;
     globalState.wires = next.wires;
     globalState.ioSettings = next.ioSettings;
+    globalState.simState = next.simState;
     recomputeSimulation();
     notify();
   },
@@ -460,8 +511,26 @@ export const circuitStore = {
     notify();
   },
 
-  setLabMode(mode: 'free' | 'guided') {
+  setLabMode(mode: 'free' | 'guided' | 'exam') {
     globalState.labMode = mode;
+    if (mode === 'exam') {
+      const isPractical =
+        globalState.selectedExperimentId && PRACTICAL_EXAM_IDS.includes(globalState.selectedExperimentId);
+      if (!isPractical) {
+        const firstId = PRACTICAL_EXAM_IDS[0];
+        globalState.selectedExperimentId = firstId;
+        const exp = LAB_EXPERIMENTS.find((e) => e.id === firstId);
+        globalState.selectedExamVariantId = exp?.variants?.[0]?.id ?? null;
+      } else if (!globalState.selectedExamVariantId) {
+        const exp = LAB_EXPERIMENTS.find((e) => e.id === globalState.selectedExperimentId);
+        globalState.selectedExamVariantId = exp?.variants?.[0]?.id ?? null;
+      }
+    }
+    notify();
+  },
+
+  setSelectedExamVariant(variantId: string | null) {
+    globalState.selectedExamVariantId = variantId;
     notify();
   },
 
@@ -496,6 +565,8 @@ export const circuitStore = {
 
   setSelectedExperiment(expId: string) {
     globalState.selectedExperimentId = expId;
+    const exp = LAB_EXPERIMENTS.find((e) => e.id === expId);
+    globalState.selectedExamVariantId = exp?.variants?.[0]?.id ?? null;
     notify();
   },
 };

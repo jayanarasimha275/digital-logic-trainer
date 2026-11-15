@@ -15,13 +15,13 @@ import {
 } from 'lucide-react';
 
 export const ConnectionCheckerTab: React.FC = () => {
-  const { placedICs, wires, ioSettings, selectedExperimentId, highlightedNodes } = useCircuitStore();
+  const { placedICs, wires, ioSettings, selectedExperimentId, selectedExamVariantId, highlightedNodes } = useCircuitStore();
 
   const selectedExp = selectedExperimentId ? LAB_EXPERIMENTS.find((e) => e.id === selectedExperimentId) : null;
 
   const result = useMemo(() => {
-    return runConnectionCheck(placedICs, wires, ioSettings, selectedExperimentId);
-  }, [placedICs, wires, ioSettings, selectedExperimentId]);
+    return runConnectionCheck(placedICs, wires, ioSettings, selectedExperimentId, selectedExamVariantId);
+  }, [placedICs, wires, ioSettings, selectedExperimentId, selectedExamVariantId]);
 
   const handleHighlight = (nodes?: string[]) => {
     if (!nodes || nodes.length === 0) {
@@ -78,7 +78,7 @@ export const ConnectionCheckerTab: React.FC = () => {
             <p className="text-[10px] text-blue-200/80">Need help? Load standard verified wiring.</p>
           </div>
           <button
-            onClick={() => circuitStore.loadExperiment(selectedExp.id, true)}
+            onClick={() => circuitStore.loadExperiment(selectedExp.id, true, selectedExamVariantId)}
             className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded text-[10px] cursor-pointer transition"
           >
             Auto-Wire
@@ -181,9 +181,9 @@ export const ConnectionCheckerTab: React.FC = () => {
             </span>
           </div>
 
-          <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/80">
+          <div className="border border-slate-800 rounded-lg overflow-x-auto max-h-60 overflow-y-auto bg-slate-950/80">
             <table className="w-full font-mono text-[10px] text-left">
-              <thead className="bg-slate-900 border-b border-slate-800 text-slate-400">
+              <thead className="bg-slate-900 border-b border-slate-800 text-slate-400 sticky top-0">
                 <tr>
                   <th className="p-1.5">Inputs</th>
                   <th className="p-1.5">Expected</th>
@@ -193,8 +193,13 @@ export const ConnectionCheckerTab: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {result.truthTableResults.map((t, i) => (
-                  <tr key={i} className={t.passed ? 'hover:bg-slate-900/40' : 'bg-red-950/20'}>
+                  <tr key={t.testCaseId || i} className={t.passed ? 'hover:bg-slate-900/40' : 'bg-red-950/20'}>
                     <td className="p-1.5 text-slate-300">
+                      {t.label && (
+                        <div className="text-[9px] font-sans text-amber-300/90 mb-0.5">
+                          {t.label}
+                        </div>
+                      )}
                       {Object.entries(t.inputs)
                         .map(([k, v]) => `${k}=${v}`)
                         .join(' ')}
@@ -209,7 +214,7 @@ export const ConnectionCheckerTab: React.FC = () => {
                         .map(([k, v]) => `${k}=${v}`)
                         .join(' ')}
                     </td>
-                    <td className="p-1.5 text-right">
+                    <td className="p-1.5 text-right whitespace-nowrap">
                       {t.passed ? (
                         <span className="text-emerald-400 font-bold">✓ PASS</span>
                       ) : (

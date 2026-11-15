@@ -9,6 +9,10 @@ import { TrainerIOPanel } from './components/DigitalIO/TrainerIOPanel';
 import { DigitalWriter } from './components/DigitalIO/DigitalWriter';
 import { DigitalReader } from './components/DigitalIO/DigitalReader';
 import { ExperimentPanel } from './components/ExperimentPanel/ExperimentPanel';
+import { PracticalExamSelector } from './components/PracticalExam/PracticalExamSelector';
+import { PracticalExamWorkspace } from './components/PracticalExam/PracticalExamWorkspace';
+import { SequentialClockBar } from './components/DigitalIO/SequentialClockBar';
+import { PRACTICAL_EXAM_SUPPLEMENTS } from './data/practicalExamData';
 import { PropertyInspector } from './components/Inspector/PropertyInspector';
 import { SchematicView } from './components/SchematicView/SchematicView';
 import { HardwareReferenceModal } from './components/Reference/HardwareReferenceModal';
@@ -20,8 +24,13 @@ export default function App() {
     activeWireStart,
     signalProbeMode,
     labMode,
+    selectedExperimentId,
     viewMode: storeViewMode,
   } = useCircuitStore();
+
+  const activeClockConfig = selectedExperimentId
+    ? PRACTICAL_EXAM_SUPPLEMENTS[selectedExperimentId]?.clockConfig
+    : undefined;
 
   const [viewMode, setViewMode] = useState<'precision' | '3d' | 'schematic'>(storeViewMode || 'precision');
   const [showHelpGuide, setShowHelpGuide] = useState<boolean>(false);
@@ -58,8 +67,14 @@ export default function App() {
 
       {/* Main Workspace Layout (Left Toolbox/Guided | Center Board | Right Inspector) */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* Left Side: Component Library Toolbox OR Guided Laboratory Steps */}
-        {labMode === 'guided' ? <GuidedModePanel /> : <ComponentToolbox />}
+        {/* Left Side: Guided Laboratory Steps | Practical Exam Selector | Component Library Toolbox */}
+        {labMode === 'guided' ? (
+          <GuidedModePanel />
+        ) : labMode === 'exam' ? (
+          <PracticalExamSelector />
+        ) : (
+          <ComponentToolbox />
+        )}
 
         {/* Center Canvas & I/O Station */}
         <main className="flex-1 flex flex-col min-w-0 overflow-y-auto p-3 space-y-3 bg-[#080e1a]">
@@ -122,6 +137,11 @@ export default function App() {
             <SchematicView />
           )}
 
+          {/* Sequential Clock & Reset Bar (when a sequential experiment is active) */}
+          {activeClockConfig && selectedExperimentId && (
+            <SequentialClockBar clockConfig={activeClockConfig} experimentId={selectedExperimentId} />
+          )}
+
           {/* Dedicated Separate Digital Reader and Writer Stations */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             {/* SEPARATE DIGITAL WRITER (Controls D0-D7 inputs, binary/hex/dec, clock pulse) */}
@@ -131,8 +151,8 @@ export default function App() {
             <DigitalReader />
           </div>
 
-          {/* Laboratory Experiment Guide & Verification Engine */}
-          <ExperimentPanel />
+          {/* Laboratory Experiment Guide & Practical Examination Workspace */}
+          {labMode === 'exam' ? <PracticalExamWorkspace /> : <ExperimentPanel />}
         </main>
 
         {/* Right Side: Properties & Real-Time Diagnostics Inspector (Tabbed: Properties / Connection Checker) */}

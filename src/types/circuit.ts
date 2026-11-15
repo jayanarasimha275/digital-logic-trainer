@@ -1,3 +1,5 @@
+import { ICInternalState } from './ic';
+
 export type LogicLevel = 'LOW' | 'HIGH' | 'FLOATING' | 'ERROR';
 
 export type WireColor = 'red' | 'black' | 'blue' | 'green' | 'yellow' | 'orange' | 'purple' | 'white';
@@ -35,6 +37,10 @@ export interface DigitalIOSettings {
   powerOn: boolean; // Main power supply switch (+5V)
 }
 
+export interface CircuitSimState {
+  icStates: Record<string, ICInternalState>;
+}
+
 export interface SimulationResult {
   nodeStates: Record<string, LogicLevel>; // Hole ID / Net ID -> LogicLevel
   nodeVoltages: Record<string, number>; // in Volts (e.g. 5.0, 0.0, NaN)
@@ -45,6 +51,7 @@ export interface SimulationResult {
   connectedNets: Record<string, string[]>; // Map node ID -> list of all electrically connected node IDs
   errors: CircuitDiagnostic[];
   warnings: CircuitDiagnostic[];
+  nextState: CircuitSimState;
 }
 
 export interface CircuitDiagnostic {
@@ -74,9 +81,10 @@ export interface ConnectionCheckResult {
   }[];
   truthTableResults?: {
     testCaseId: string;
+    label?: string;
     inputs: Record<string, number>;
     expected: Record<string, number>;
-    actual: Record<string, number>;
+    actual: Record<string, number | string>;
     passed: boolean;
   }[];
 }

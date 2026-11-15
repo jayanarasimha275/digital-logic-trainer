@@ -295,16 +295,14 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
         7: 'HIGH',  // Y7'
       };
 
-      if (g1 === 'FLOATING' || g2a === 'FLOATING' || g2b === 'FLOATING') {
-        Object.keys(outputs).forEach((k) => (outputs[Number(k)] = 'FLOATING'));
+      // If any enable is in its disabling state, all outputs are unconditionally HIGH
+      if (g1 === 'LOW' || g2a === 'HIGH' || g2b === 'HIGH') {
         return outputs;
       }
 
-      // Enabled condition: G1 is HIGH, G2A' is LOW, G2B' is LOW
-      const isEnabled = g1 === 'HIGH' && g2a === 'LOW' && g2b === 'LOW';
-
-      if (!isEnabled) {
-        return outputs; // All stay HIGH when disabled
+      if (g1 === 'FLOATING' || g2a === 'FLOATING' || g2b === 'FLOATING') {
+        Object.keys(outputs).forEach((k) => (outputs[Number(k)] = 'FLOATING'));
+        return outputs;
       }
 
       if (a === 'FLOATING' || b === 'FLOATING' || c === 'FLOATING') {
@@ -339,9 +337,9 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
 
   // -------------------------------------------------------------
   // 74148: 8-to-3 Line Priority Encoder (DIP-16)
-  // Datasheet reference: TI SN74LS148
-  // Inputs: 0'..7' (pins 10,11,12,13,1,2,3,4 - actually standard:
-  // pin 10=EO', 11=GS', 12=3', 13=2', 14=1', 15=0', 1=4', 2=5', 3=6', 4=7', 5=EI', 6=A2', 7=A1', 8=GND, 9=A0', 16=VCC)
+  // Datasheet reference: TI SN74LS148 & SRM AP CSE 207 Manual p.18-19
+  // Pins: 1=4', 2=5', 3=6', 4=7', 5=EI', 6=A2', 7=A1', 8=GND,
+  //       9=A0', 10=0', 11=1', 12=2', 13=3', 14=GS', 15=EO', 16=VCC
   // -------------------------------------------------------------
   '74148': {
     id: '74148',
@@ -352,24 +350,24 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
     pinCount: 16,
     vccPin: 16,
     gndPin: 8,
-    description: 'Encodes 8 active-low data inputs to 3-bit active-low binary code according to priority (7 highest).',
-    datasheetRef: 'Texas Instruments SN74LS148 Priority Encoder Pinout',
+    description: 'Encodes 8 active-low data inputs (0\'-7\') to 3-bit active-low binary code (A2\',A1\',A0\') with priority (7\' highest).',
+    datasheetRef: 'Texas Instruments SN74LS148 / SRM AP Manual p.18-19',
     pins: [
       { number: 1, name: '4\'', type: 'INPUT', description: 'Data Input 4 (Active-Low)', inverted: true },
       { number: 2, name: '5\'', type: 'INPUT', description: 'Data Input 5 (Active-Low)', inverted: true },
       { number: 3, name: '6\'', type: 'INPUT', description: 'Data Input 6 (Active-Low)', inverted: true },
-      { number: 4, name: '7\'', type: 'INPUT', description: 'Data Input 7 (Highest Priority)', inverted: true },
+      { number: 4, name: '7\'', type: 'INPUT', description: 'Data Input 7 (Highest Priority, Active-Low)', inverted: true },
       { number: 5, name: 'EI\'', type: 'ENABLE', description: 'Enable Input (Active-Low)', inverted: true },
       { number: 6, name: 'A2\'', type: 'OUTPUT', description: 'Address Output A2 (Active-Low)', inverted: true },
       { number: 7, name: 'A1\'', type: 'OUTPUT', description: 'Address Output A1 (Active-Low)', inverted: true },
       { number: 8, name: 'GND', type: 'POWER', description: 'Ground (0V)' },
       { number: 9, name: 'A0\'', type: 'OUTPUT', description: 'Address Output A0 (Active-Low)', inverted: true },
-      { number: 10, name: 'EO\'', type: 'OUTPUT', description: 'Enable Output (Active-Low)', inverted: true },
-      { number: 11, name: 'GS\'', type: 'OUTPUT', description: 'Group Signal (Active-Low)', inverted: true },
-      { number: 12, name: '3\'', type: 'INPUT', description: 'Data Input 3 (Active-Low)', inverted: true },
-      { number: 13, name: '2\'', type: 'INPUT', description: 'Data Input 2 (Active-Low)', inverted: true },
-      { number: 14, name: '1\'', type: 'INPUT', description: 'Data Input 1 (Active-Low)', inverted: true },
-      { number: 15, name: '0\'', type: 'INPUT', description: 'Data Input 0 (Active-Low)', inverted: true },
+      { number: 10, name: '0\'', type: 'INPUT', description: 'Data Input 0 (Lowest Priority, Active-Low)', inverted: true },
+      { number: 11, name: '1\'', type: 'INPUT', description: 'Data Input 1 (Active-Low)', inverted: true },
+      { number: 12, name: '2\'', type: 'INPUT', description: 'Data Input 2 (Active-Low)', inverted: true },
+      { number: 13, name: '3\'', type: 'INPUT', description: 'Data Input 3 (Active-Low)', inverted: true },
+      { number: 14, name: 'GS\'', type: 'OUTPUT', description: 'Group Signal (Active-Low when enabled & any input active)', inverted: true },
+      { number: 15, name: 'EO\'', type: 'OUTPUT', description: 'Enable Output (Active-Low when enabled & all inputs inactive)', inverted: true },
       { number: 16, name: 'VCC', type: 'POWER', description: 'Supply Voltage (+5V)' },
     ],
     evaluateCustom: (levels) => {
@@ -378,8 +376,8 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
         6: 'HIGH',  // A2'
         7: 'HIGH',  // A1'
         9: 'HIGH',  // A0'
-        10: 'HIGH', // EO'
-        11: 'HIGH', // GS'
+        14: 'HIGH', // GS'
+        15: 'HIGH', // EO'
       };
 
       if (ei === 'FLOATING') {
@@ -388,51 +386,53 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
       }
 
       if (ei !== 'LOW') {
-        // Disabled: all outputs remain HIGH (inactive)
+        // Disabled (EI' = HIGH): all outputs remain HIGH (inactive)
         return outputs;
       }
 
-      // Input pins: 7'->pin 4, 6'->pin 3, 5'->pin 2, 4'->pin 1, 3'->pin 12, 2'->pin 13, 1'->pin 14, 0'->pin 15
+      // Input pins (highest priority first): 7'->pin 4, 6'->pin 3, 5'->pin 2, 4'->pin 1, 3'->pin 13, 2'->pin 12, 1'->pin 11, 0'->pin 10
       const inputPinOrder = [
         { index: 7, pin: 4 },
         { index: 6, pin: 3 },
         { index: 5, pin: 2 },
         { index: 4, pin: 1 },
-        { index: 3, pin: 12 },
-        { index: 2, pin: 13 },
-        { index: 1, pin: 14 },
-        { index: 0, pin: 15 },
+        { index: 3, pin: 13 },
+        { index: 2, pin: 12 },
+        { index: 1, pin: 11 },
+        { index: 0, pin: 10 },
       ];
 
       let highestActive = -1;
+      let anyDriven = false;
       for (const item of inputPinOrder) {
-        if (levels[item.pin] === 'LOW') {
+        const lvl = levels[item.pin];
+        if (lvl === 'HIGH' || lvl === 'LOW') {
+          anyDriven = true;
+        }
+        if (lvl === 'LOW') {
           highestActive = item.index;
           break;
         }
       }
 
       if (highestActive === -1) {
-        // No input active (all are HIGH or floating)
-        outputs[10] = 'LOW'; // EO' goes LOW when enabled and no inputs active
-        outputs[11] = 'HIGH'; // GS' stays HIGH
+        if (!anyDriven) {
+          Object.keys(outputs).forEach((k) => (outputs[Number(k)] = 'FLOATING'));
+          return outputs;
+        }
+        // Enabled and no input active (all HIGH)
+        outputs[15] = 'LOW';  // EO' goes LOW
+        outputs[14] = 'HIGH'; // GS' stays HIGH
         outputs[6] = 'HIGH';
         outputs[7] = 'HIGH';
         outputs[9] = 'HIGH';
       } else {
-        outputs[11] = 'LOW'; // GS' goes LOW (group signal active)
-        outputs[10] = 'HIGH'; // EO' stays HIGH
+        outputs[14] = 'LOW';  // GS' goes LOW (group signal active)
+        outputs[15] = 'HIGH'; // EO' stays HIGH
 
-        // Active-low encoding of highestActive
-        // e.g. 7 (binary 111): active-low is 000 (LOW, LOW, LOW)
-        // 0 (binary 000): active-low is 111 (HIGH, HIGH, HIGH)
-        const a2 = (highestActive & 4) !== 0 ? 'LOW' : 'HIGH';
-        const a1 = (highestActive & 2) !== 0 ? 'LOW' : 'HIGH';
-        const a0 = (highestActive & 1) !== 0 ? 'LOW' : 'HIGH';
-
-        outputs[6] = a2;
-        outputs[7] = a1;
-        outputs[9] = a0;
+        outputs[6] = (highestActive & 4) !== 0 ? 'LOW' : 'HIGH';
+        outputs[7] = (highestActive & 2) !== 0 ? 'LOW' : 'HIGH';
+        outputs[9] = (highestActive & 1) !== 0 ? 'LOW' : 'HIGH';
       }
 
       return outputs;
@@ -484,33 +484,17 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
         9: 'LOW', // 2Y
       };
 
-      if (s0 === 'FLOATING' || s1 === 'FLOATING') {
-        outputs[7] = 'FLOATING';
-        outputs[9] = 'FLOATING';
-        return outputs;
-      }
+      const evalSection = (g: LogicLevel, dataPins: Record<number, number>): LogicLevel => {
+        if (g === 'HIGH') return 'LOW';
+        if (g === 'FLOATING') return 'FLOATING';
+        if (s0 === 'FLOATING' || s1 === 'FLOATING') return 'FLOATING';
+        const selIdx = (s1 === 'HIGH' ? 2 : 0) + (s0 === 'HIGH' ? 1 : 0);
+        const selectedPin = dataPins[selIdx];
+        return levels[selectedPin] ?? 'FLOATING';
+      };
 
-      const selIdx = (s1 === 'HIGH' ? 2 : 0) + (s0 === 'HIGH' ? 1 : 0);
-
-      // Section 1
-      const g1 = levels[1];
-      if (g1 === 'LOW') {
-        const c1Map: Record<number, number> = { 0: 6, 1: 5, 2: 4, 3: 3 };
-        const selectedPin = c1Map[selIdx];
-        outputs[7] = levels[selectedPin] ?? 'FLOATING';
-      } else {
-        outputs[7] = 'LOW';
-      }
-
-      // Section 2
-      const g2 = levels[15];
-      if (g2 === 'LOW') {
-        const c2Map: Record<number, number> = { 0: 10, 1: 11, 2: 12, 3: 13 };
-        const selectedPin = c2Map[selIdx];
-        outputs[9] = levels[selectedPin] ?? 'FLOATING';
-      } else {
-        outputs[9] = 'LOW';
-      }
+      outputs[7] = evalSection(levels[1], { 0: 6, 1: 5, 2: 4, 3: 3 });
+      outputs[9] = evalSection(levels[15], { 0: 10, 1: 11, 2: 12, 3: 13 });
 
       return outputs;
     },
@@ -567,7 +551,9 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
       const g1 = levels[1];
       const a1 = levels[2];
       const b1 = levels[3];
-      if (g1 === 'LOW') {
+      if (g1 === 'FLOATING') {
+        outputs[4] = outputs[5] = outputs[6] = outputs[7] = 'FLOATING';
+      } else if (g1 === 'LOW') {
         if (a1 === 'FLOATING' || b1 === 'FLOATING') {
           outputs[4] = outputs[5] = outputs[6] = outputs[7] = 'FLOATING';
         } else {
@@ -581,7 +567,9 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
       const g2 = levels[15];
       const a2 = levels[14];
       const b2 = levels[13];
-      if (g2 === 'LOW') {
+      if (g2 === 'FLOATING') {
+        outputs[12] = outputs[11] = outputs[10] = outputs[9] = 'FLOATING';
+      } else if (g2 === 'LOW') {
         if (a2 === 'FLOATING' || b2 === 'FLOATING') {
           outputs[12] = outputs[11] = outputs[10] = outputs[9] = 'FLOATING';
         } else {
@@ -592,6 +580,380 @@ export const IC_DEFINITIONS: Record<string, ICDefinition> = {
       }
 
       return outputs;
+    },
+  },
+
+  // -------------------------------------------------------------
+  // 7485: 4-Bit Magnitude Comparator (DIP-16)
+  // Datasheet reference: TI SN74LS85 & SRM AP CSE 207 Manual p.20
+  // Pins: 1=B3, 2=IA<B, 3=IA=B, 4=IA>B, 5=OA>B, 6=OA=B, 7=OA<B, 8=GND,
+  //       9=B0, 10=A0, 11=B1, 12=A1, 13=A2, 14=B2, 15=A3, 16=VCC
+  // -------------------------------------------------------------
+  '7485': {
+    id: '7485',
+    partNumber: 'SN74LS85N',
+    name: '4-Bit Magnitude Comparator',
+    category: 'Arithmetic',
+    package: 'DIP-16',
+    pinCount: 16,
+    vccPin: 16,
+    gndPin: 8,
+    description: 'Compares two 4-bit binary words (A3..A0 and B3..B0) with cascade inputs (IA<B, IA=B, IA>B) and outputs OA>B, OA=B, OA<B.',
+    datasheetRef: 'Texas Instruments SN74LS85 / SRM AP Manual p.20',
+    pins: [
+      { number: 1, name: 'B3', type: 'INPUT', description: 'Word B Input Bit 3 (MSB)' },
+      { number: 2, name: 'IA<B', type: 'INPUT', description: 'Cascade Input (A < B)' },
+      { number: 3, name: 'IA=B', type: 'INPUT', description: 'Cascade Input (A = B)' },
+      { number: 4, name: 'IA>B', type: 'INPUT', description: 'Cascade Input (A > B)' },
+      { number: 5, name: 'OA>B', type: 'OUTPUT', description: 'Output (A > B)' },
+      { number: 6, name: 'OA=B', type: 'OUTPUT', description: 'Output (A = B)' },
+      { number: 7, name: 'OA<B', type: 'OUTPUT', description: 'Output (A < B)' },
+      { number: 8, name: 'GND', type: 'POWER', description: 'Ground (0V)' },
+      { number: 9, name: 'B0', type: 'INPUT', description: 'Word B Input Bit 0 (LSB)' },
+      { number: 10, name: 'A0', type: 'INPUT', description: 'Word A Input Bit 0 (LSB)' },
+      { number: 11, name: 'B1', type: 'INPUT', description: 'Word B Input Bit 1' },
+      { number: 12, name: 'A1', type: 'INPUT', description: 'Word A Input Bit 1' },
+      { number: 13, name: 'A2', type: 'INPUT', description: 'Word A Input Bit 2' },
+      { number: 14, name: 'B2', type: 'INPUT', description: 'Word B Input Bit 2' },
+      { number: 15, name: 'A3', type: 'INPUT', description: 'Word A Input Bit 3 (MSB)' },
+      { number: 16, name: 'VCC', type: 'POWER', description: 'Supply Voltage (+5V)' },
+    ],
+    evaluateCustom: (levels) => {
+      const requiredPins = [1, 2, 3, 4, 9, 10, 11, 12, 13, 14, 15];
+      if (requiredPins.some((p) => levels[p] === 'FLOATING' || !levels[p])) {
+        return { 5: 'FLOATING', 6: 'FLOATING', 7: 'FLOATING' };
+      }
+      if (requiredPins.some((p) => levels[p] === 'ERROR')) {
+        return { 5: 'ERROR', 6: 'ERROR', 7: 'ERROR' };
+      }
+
+      const bit = (p: number) => (levels[p] === 'HIGH' ? 1 : 0);
+      const valA = (bit(15) << 3) | (bit(13) << 2) | (bit(12) << 1) | bit(10);
+      const valB = (bit(1) << 3) | (bit(14) << 2) | (bit(11) << 1) | bit(9);
+
+      if (valA > valB) {
+        return { 5: 'HIGH', 6: 'LOW', 7: 'LOW' };
+      }
+      if (valA < valB) {
+        return { 5: 'LOW', 6: 'LOW', 7: 'HIGH' };
+      }
+
+      // A == B: resolve via SN74LS85 cascade truth table
+      const iGt = levels[4] === 'HIGH';
+      const iEq = levels[3] === 'HIGH';
+      const iLt = levels[2] === 'HIGH';
+
+      if (iEq) {
+        return { 5: 'LOW', 6: 'HIGH', 7: 'LOW' };
+      }
+      if (iGt && !iLt) {
+        return { 5: 'HIGH', 6: 'LOW', 7: 'LOW' };
+      }
+      if (!iGt && iLt) {
+        return { 5: 'LOW', 6: 'LOW', 7: 'HIGH' };
+      }
+      if (iGt && iLt) {
+        return { 5: 'LOW', 6: 'LOW', 7: 'LOW' };
+      }
+      // iGt === false && iLt === false && iEq === false
+      return { 5: 'HIGH', 6: 'LOW', 7: 'HIGH' };
+    },
+  },
+
+  // -------------------------------------------------------------
+  // 7474: Dual D-Type Positive-Edge-Triggered Flip-Flop (DIP-14)
+  // Datasheet reference: TI SN74LS74A & SRM AP CSE 207 Manual p.5, 23-25
+  // -------------------------------------------------------------
+  '7474': {
+    id: '7474',
+    partNumber: 'SN74LS74AN',
+    name: 'Dual Positive-Edge D Flip-Flop',
+    category: 'Flip-Flops',
+    package: 'DIP-14',
+    pinCount: 14,
+    vccPin: 14,
+    gndPin: 7,
+    isSequential: true,
+    description: 'Dual positive-edge-triggered D flip-flops with active-low asynchronous preset (PRE\') and clear (CLR\').',
+    datasheetRef: 'Texas Instruments SN74LS74A / SRM AP Manual p.5, 23',
+    pins: [
+      { number: 1, name: '1CLR\'', type: 'ENABLE', description: 'FF1 Clear (Active-Low)', inverted: true },
+      { number: 2, name: '1D', type: 'INPUT', description: 'FF1 Data Input' },
+      { number: 3, name: '1CLK', type: 'INPUT', description: 'FF1 Clock Input (Rising Edge)' },
+      { number: 4, name: '1PRE\'', type: 'ENABLE', description: 'FF1 Preset (Active-Low)', inverted: true },
+      { number: 5, name: '1Q', type: 'OUTPUT', description: 'FF1 Output Q' },
+      { number: 6, name: '1Q\'', type: 'OUTPUT', description: 'FF1 Complement Output Q\'', inverted: true },
+      { number: 7, name: 'GND', type: 'POWER', description: 'Ground (0V)' },
+      { number: 8, name: '2Q\'', type: 'OUTPUT', description: 'FF2 Complement Output Q\'', inverted: true },
+      { number: 9, name: '2Q', type: 'OUTPUT', description: 'FF2 Output Q' },
+      { number: 10, name: '2PRE\'', type: 'ENABLE', description: 'FF2 Preset (Active-Low)', inverted: true },
+      { number: 11, name: '2CLK', type: 'INPUT', description: 'FF2 Clock Input (Rising Edge)' },
+      { number: 12, name: '2D', type: 'INPUT', description: 'FF2 Data Input' },
+      { number: 13, name: '2CLR\'', type: 'ENABLE', description: 'FF2 Clear (Active-Low)', inverted: true },
+      { number: 14, name: 'VCC', type: 'POWER', description: 'Supply Voltage (+5V)' },
+    ],
+    evaluateSequential: (levels, state) => {
+      const outputs: Record<number, LogicLevel> = {};
+      const nextRegisters: Record<string, number> = { ...state.registers };
+
+      const evalD = (
+        key: string,
+        clrPin: number,
+        dPin: number,
+        clkPin: number,
+        prePin: number,
+        qPin: number,
+        qbPin: number
+      ) => {
+        const clr = levels[clrPin];
+        const pre = levels[prePin];
+        const d = levels[dPin];
+        const clk = levels[clkPin];
+
+        if (pre === 'FLOATING' || clr === 'FLOATING') {
+          outputs[qPin] = 'FLOATING';
+          outputs[qbPin] = 'FLOATING';
+          return;
+        }
+
+        // Asynchronous active-LOW PRE' and CLR'
+        if (pre === 'LOW' && clr === 'LOW') {
+          // Invalid state on 74LS74: both Q and Q' go HIGH (non-stable when released)
+          nextRegisters[key] = 1;
+          outputs[qPin] = 'HIGH';
+          outputs[qbPin] = 'HIGH';
+          return;
+        }
+        if (pre === 'LOW') {
+          nextRegisters[key] = 1;
+          outputs[qPin] = 'HIGH';
+          outputs[qbPin] = 'LOW';
+          return;
+        }
+        if (clr === 'LOW') {
+          nextRegisters[key] = 0;
+          outputs[qPin] = 'LOW';
+          outputs[qbPin] = 'HIGH';
+          return;
+        }
+
+        if (d === 'FLOATING' || clk === 'FLOATING') {
+          outputs[qPin] = 'FLOATING';
+          outputs[qbPin] = 'FLOATING';
+          return;
+        }
+
+        let q = nextRegisters[key] ?? 0;
+        const prevClk = state.prevClocks[clkPin] ?? clk;
+        // Positive-edge triggered: LOW -> HIGH
+        if (prevClk === 'LOW' && clk === 'HIGH') {
+          q = d === 'HIGH' ? 1 : 0;
+        }
+
+        nextRegisters[key] = q;
+        outputs[qPin] = q === 1 ? 'HIGH' : 'LOW';
+        outputs[qbPin] = q === 1 ? 'LOW' : 'HIGH';
+      };
+
+      evalD('q1', 1, 2, 3, 4, 5, 6);
+      evalD('q2', 13, 12, 11, 10, 9, 8);
+
+      return { outputs, nextRegisters };
+    },
+  },
+
+  // -------------------------------------------------------------
+  // 7476: Dual J-K Negative-Edge-Triggered Flip-Flop (DIP-16)
+  // Datasheet reference: TI SN74LS76A & SRM AP CSE 207 Manual p.5, 22, 26
+  // Note NON-STANDARD POWER: Pin 5 = VCC, Pin 13 = GND
+  // -------------------------------------------------------------
+  '7476': {
+    id: '7476',
+    partNumber: 'SN74LS76AN',
+    name: 'Dual J-K Flip-Flop',
+    category: 'Flip-Flops',
+    package: 'DIP-16',
+    pinCount: 16,
+    vccPin: 5,
+    gndPin: 13,
+    isSequential: true,
+    description: 'Dual J-K flip-flops with active-low Preset/Clear and falling-edge (bubble) clock. Non-standard power: Pin 5=VCC, Pin 13=GND.',
+    datasheetRef: 'Texas Instruments SN74LS76A / SRM AP Manual p.5, 22',
+    pins: [
+      { number: 1, name: '1CLK\'', type: 'INPUT', description: 'FF1 Clock Input (Falling Edge)', inverted: true },
+      { number: 2, name: '1PRE\'', type: 'ENABLE', description: 'FF1 Preset (Active-Low)', inverted: true },
+      { number: 3, name: '1CLR\'', type: 'ENABLE', description: 'FF1 Clear (Active-Low)', inverted: true },
+      { number: 4, name: '1J', type: 'INPUT', description: 'FF1 J Input' },
+      { number: 5, name: 'VCC', type: 'POWER', description: 'Supply Voltage (+5V, Pin 5)' },
+      { number: 6, name: '2CLK\'', type: 'INPUT', description: 'FF2 Clock Input (Falling Edge)', inverted: true },
+      { number: 7, name: '2PRE\'', type: 'ENABLE', description: 'FF2 Preset (Active-Low)', inverted: true },
+      { number: 8, name: '2CLR\'', type: 'ENABLE', description: 'FF2 Clear (Active-Low)', inverted: true },
+      { number: 9, name: '2J', type: 'INPUT', description: 'FF2 J Input' },
+      { number: 10, name: '2Q\'', type: 'OUTPUT', description: 'FF2 Complement Output Q\'', inverted: true },
+      { number: 11, name: '2Q', type: 'OUTPUT', description: 'FF2 Output Q' },
+      { number: 12, name: '2K', type: 'INPUT', description: 'FF2 K Input' },
+      { number: 13, name: 'GND', type: 'POWER', description: 'Ground (0V, Pin 13)' },
+      { number: 14, name: '1Q\'', type: 'OUTPUT', description: 'FF1 Complement Output Q\'', inverted: true },
+      { number: 15, name: '1Q', type: 'OUTPUT', description: 'FF1 Output Q' },
+      { number: 16, name: '1K', type: 'INPUT', description: 'FF1 K Input' },
+    ],
+    evaluateSequential: (levels, state) => {
+      const outputs: Record<number, LogicLevel> = {};
+      const nextRegisters: Record<string, number> = { ...state.registers };
+
+      const evalJK = (
+        key: string,
+        clkPin: number,
+        prePin: number,
+        clrPin: number,
+        jPin: number,
+        kPin: number,
+        qPin: number,
+        qbPin: number
+      ) => {
+        const pre = levels[prePin];
+        const clr = levels[clrPin];
+        const j = levels[jPin];
+        const k = levels[kPin];
+        const clk = levels[clkPin];
+
+        if (pre === 'FLOATING' || clr === 'FLOATING') {
+          outputs[qPin] = 'FLOATING';
+          outputs[qbPin] = 'FLOATING';
+          return;
+        }
+
+        if (pre === 'LOW' && clr === 'LOW') {
+          // Invalid state: both Q and Q' go HIGH while PRE'=CLR'=LOW
+          nextRegisters[key] = 1;
+          outputs[qPin] = 'HIGH';
+          outputs[qbPin] = 'HIGH';
+          return;
+        }
+        if (pre === 'LOW') {
+          nextRegisters[key] = 1;
+          outputs[qPin] = 'HIGH';
+          outputs[qbPin] = 'LOW';
+          return;
+        }
+        if (clr === 'LOW') {
+          nextRegisters[key] = 0;
+          outputs[qPin] = 'LOW';
+          outputs[qbPin] = 'HIGH';
+          return;
+        }
+
+        if (j === 'FLOATING' || k === 'FLOATING' || clk === 'FLOATING') {
+          outputs[qPin] = 'FLOATING';
+          outputs[qbPin] = 'FLOATING';
+          return;
+        }
+
+        let q = nextRegisters[key] ?? 0;
+        const prevClk = state.prevClocks[clkPin] ?? clk;
+        // Negative-edge triggered per 74LS76A datasheet & manual p.22 schematic bubble: HIGH -> LOW
+        if (prevClk === 'HIGH' && clk === 'LOW') {
+          const jHigh = j === 'HIGH';
+          const kHigh = k === 'HIGH';
+          if (!jHigh && !kHigh) {
+            // Hold
+          } else if (!jHigh && kHigh) {
+            q = 0; // Reset
+          } else if (jHigh && !kHigh) {
+            q = 1; // Set
+          } else {
+            q = q === 1 ? 0 : 1; // Toggle
+          }
+        }
+
+        nextRegisters[key] = q;
+        outputs[qPin] = q === 1 ? 'HIGH' : 'LOW';
+        outputs[qbPin] = q === 1 ? 'LOW' : 'HIGH';
+      };
+
+      evalJK('q1', 1, 2, 3, 4, 16, 15, 14);
+      evalJK('q2', 6, 7, 8, 9, 12, 11, 10);
+
+      return { outputs, nextRegisters };
+    },
+  },
+
+  // -------------------------------------------------------------
+  // 7490: Decade Counter (DIP-14)
+  // Datasheet reference: TI SN74LS90 & SRM AP CSE 207 Manual p.28-29
+  // Note NON-STANDARD POWER: Pin 5 = VCC, Pin 10 = GND; Pins 4 & 13 = NC
+  // -------------------------------------------------------------
+  '7490': {
+    id: '7490',
+    partNumber: 'SN74LS90N',
+    name: 'BCD Decade Counter',
+    category: 'Counters',
+    package: 'DIP-14',
+    pinCount: 14,
+    vccPin: 5,
+    gndPin: 10,
+    isSequential: true,
+    description: '4-bit ripple decade counter (Mod-2 on CKA + Mod-5 on CKB) with gated async Reset-0 and Reset-9. Pin 5=VCC, Pin 10=GND.',
+    datasheetRef: 'Texas Instruments SN74LS90 / SRM AP Manual p.28',
+    pins: [
+      { number: 1, name: 'CKB', type: 'INPUT', description: 'Mod-5 Clock Input B (Falling Edge)', inverted: true },
+      { number: 2, name: 'R0(1)', type: 'ENABLE', description: 'Gated Reset-to-0 Input 1' },
+      { number: 3, name: 'R0(2)', type: 'ENABLE', description: 'Gated Reset-to-0 Input 2' },
+      { number: 4, name: 'NC', type: 'NC', description: 'No Internal Connection' },
+      { number: 5, name: 'VCC', type: 'POWER', description: 'Supply Voltage (+5V, Pin 5)' },
+      { number: 6, name: 'R9(1)', type: 'ENABLE', description: 'Gated Set-to-9 Input 1' },
+      { number: 7, name: 'R9(2)', type: 'ENABLE', description: 'Gated Set-to-9 Input 2' },
+      { number: 8, name: 'QC', type: 'OUTPUT', description: 'Bit 2 Output (A2)' },
+      { number: 9, name: 'QB', type: 'OUTPUT', description: 'Bit 1 Output (A1)' },
+      { number: 10, name: 'GND', type: 'POWER', description: 'Ground (0V, Pin 10)' },
+      { number: 11, name: 'QD', type: 'OUTPUT', description: 'Bit 3 Output (A3 / MSB)' },
+      { number: 12, name: 'QA', type: 'OUTPUT', description: 'Bit 0 Output (A0 / LSB)' },
+      { number: 13, name: 'NC', type: 'NC', description: 'No Internal Connection' },
+      { number: 14, name: 'CKA', type: 'INPUT', description: 'Mod-2 Clock Input A (Falling Edge)', inverted: true },
+    ],
+    evaluateSequential: (levels, state) => {
+      const cka = levels[14];
+      const ckb = levels[1];
+      const r0Active = levels[2] === 'HIGH' && levels[3] === 'HIGH';
+      const r9Active = levels[6] === 'HIGH' && levels[7] === 'HIGH';
+
+      let qa = state.registers['qa'] ?? 0;
+      let mod5 = state.registers['mod5'] ?? 0;
+
+      if (r9Active) {
+        // Async Set to 9 (1001): QD=1 (mod5=4), QC=0, QB=0, QA=1
+        qa = 1;
+        mod5 = 4;
+      } else if (r0Active) {
+        // Async Reset to 0 (0000)
+        qa = 0;
+        mod5 = 0;
+      } else {
+        if (cka !== 'FLOATING') {
+          const prevCka = state.prevClocks[14] ?? cka;
+          if (prevCka === 'HIGH' && cka === 'LOW') {
+            qa = qa === 1 ? 0 : 1;
+          }
+        }
+        if (ckb !== 'FLOATING') {
+          const prevCkb = state.prevClocks[1] ?? ckb;
+          if (prevCkb === 'HIGH' && ckb === 'LOW') {
+            mod5 = (mod5 + 1) % 5;
+          }
+        }
+      }
+
+      const outputs: Record<number, LogicLevel> = {
+        12: cka === 'FLOATING' && !r0Active && !r9Active ? 'FLOATING' : qa === 1 ? 'HIGH' : 'LOW',
+        9: ckb === 'FLOATING' && !r0Active && !r9Active ? 'FLOATING' : (mod5 & 1) !== 0 ? 'HIGH' : 'LOW',
+        8: ckb === 'FLOATING' && !r0Active && !r9Active ? 'FLOATING' : (mod5 & 2) !== 0 ? 'HIGH' : 'LOW',
+        11: ckb === 'FLOATING' && !r0Active && !r9Active ? 'FLOATING' : (mod5 & 4) !== 0 ? 'HIGH' : 'LOW',
+      };
+
+      return {
+        outputs,
+        nextRegisters: { qa, mod5 },
+      };
     },
   },
 };
